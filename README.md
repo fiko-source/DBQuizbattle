@@ -17,3 +17,6 @@ source .venv/bin/activate
 
 installieren
 pip install -r requirements.txt
+
+--------------------------------------------------
+questions via db mongodb or tinydb
