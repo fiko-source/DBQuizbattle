@@ -1,0 +1,44 @@
+{
+  "_default": {
+    "1": {
+      "frage": "Wie viele Spieler stehen beim Fußball pro Team auf dem Feld?",
+      "antwort": "11"
+    },
+    "2": {
+      "frage": "In welcher Sportart wird ein Slam Dunk gemacht?",
+      "antwort": "Basketball"
+    },
+    "3": {
+      "frage": "Wie lang ist ein Marathon ungefähr in Kilometern?",
+      "antwort": "42,195"
+    },
+    "4": {
+      "frage": "Welche Farbe hat die Karte für einen Platzverweis im Fußball?",
+      "antwort": "Rot"
+    },
+    "5": {
+      "frage": "Wie nennt man den Schläger beim Tennis?",
+      "antwort": "Tennisschläger"
+    },
+    "6": {
+      "frage": "Welche Sportart nutzt einen Puck?",
+      "antwort": "Eishockey"
+    },
+    "7": {
+      "frage": "Wie viele Ringe hat das olympische Symbol?",
+      "antwort": "5"
+    },
+    "8": {
+      "frage": "In welcher Sportart gibt es einen Home Run?",
+      "antwort": "Baseball"
+    },
+    "9": {
+      "frage": "Wie nennt man das Ziel beim Handball?",
+      "antwort": "Tor"
+    },
+    "10": {
+      "frage": "Welche Sportart ist für den Begriff 'Birdie' bekannt?",
+      "antwort": "Golf"
+    }
+  }
+}
