@@ -25,4 +25,5 @@ questions via db mongodb or tinydb
 - Jeder Client bekommt gleiche Frage
 - Jeder Client hat begrenzt Zeit Frage zu beantworten
 - Timer 10 Sekunden
-- kein timeout bei falscher antwort 
+- kein timeout bei richtiger antwort 
+- ui für clients
