@@ -14,7 +14,7 @@ SERVER_IP = os.getenv("SERVER_IP")
 SERVER_PORT = int(os.getenv("SERVER_PORT"))
 
 MIN_PLAYERS = 3
-ROUND_TIME = 10
+ROUND_TIME = 20
 
 connected_clients = set()
 
