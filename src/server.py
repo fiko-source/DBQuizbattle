@@ -14,37 +14,33 @@ SERVER_IP = os.getenv("SERVER_IP")
 SERVER_PORT = int(os.getenv("SERVER_PORT"))
 
 MIN_PLAYERS = 3
+ROUND_TIME = 10
 
 connected_clients = set()
 
 game_started = False
 current_question = None
+current_round = 0
 answers = {}
+scores = {}
+
+next_player_id = 1
+client_ids = {}
 
 
-def get_random_question():
-    """
-    Holt eine zufällige Frage aus der TinyDB.
-    """
-
+def get_all_questions():
     questions = db.all()
-
-    if not questions:
-        return None
-
-    return random.choice(questions)
+    random.shuffle(questions)
+    return questions
 
 
 async def broadcast(message):
-    """
-    Sendet eine Nachricht an alle aktuell verbundenen Clients.
-    """
-
     if not connected_clients:
         return
 
-    disconnected_clients = set()
     message_json = json.dumps(message)
+
+    disconnected_clients = set()
 
     for client in connected_clients.copy():
         try:
@@ -57,12 +53,7 @@ async def broadcast(message):
 
 
 async def start_game_if_ready():
-    """
-    Startet das Spiel, sobald genug Clients verbunden sind.
-    """
-
     global game_started
-    global current_question
 
     if game_started:
         return
@@ -72,36 +63,115 @@ async def start_game_if_ready():
         return
 
     game_started = True
-    current_question = get_random_question()
 
-    if current_question is None:
+    print("(server) Genug Spieler verbunden. Spiel startet.")
+
+    asyncio.create_task(game_loop())
+
+
+async def game_loop():
+    global current_question
+    global current_round
+    global answers
+
+    questions = get_all_questions()
+
+    if not questions:
         await broadcast({
             "type": "error",
             "message": "Keine Fragen in der Datenbank gefunden."
         })
         return
 
-    print("(server) Spiel startet")
-    print(f"(server) Frage: {current_question['frage']}")
+    for question in questions:
+        current_round += 1
+        current_question = question
+        answers = {}
+
+        print(f"(server) Runde {current_round} startet")
+        print(f"(server) Frage: {current_question['frage']}")
+
+        await broadcast({
+            "type": "question",
+            "round": current_round,
+            "time": ROUND_TIME,
+            "data": {
+                "frage": current_question["frage"]
+            }
+        })
+
+        await asyncio.sleep(ROUND_TIME)
+
+        await evaluate_round()
+
+        await asyncio.sleep(3)
 
     await broadcast({
-        "type": "question",
-        "data": {
-            "frage": current_question["frage"]
+        "type": "game_over",
+        "message": "Spiel beendet.",
+        "scores": scores
+    })
+
+    print("(server) Spiel beendet.")
+
+
+async def evaluate_round():
+    correct_answer = current_question["antwort"].strip().lower()
+
+    results = {}
+
+    for client in connected_clients:
+        client_id = client_ids[client]
+
+        user_answer = answers.get(client_id)
+
+        if user_answer is None:
+            results[client_id] = {
+                "answer": None,
+                "correct": False
+            }
+            scores[client_id] = scores.get(client_id, 0)
+            continue
+
+        is_correct = user_answer.strip().lower() == correct_answer
+
+        if is_correct:
+            scores[client_id] = scores.get(client_id, 0) + 1
+        else:
+            scores[client_id] = scores.get(client_id, 0)
+
+        results[client_id] = {
+            "answer": user_answer,
+            "correct": is_correct
         }
+
+    await broadcast({
+        "type": "result",
+        "correct_answer": current_question["antwort"],
+        "results": results,
+        "scores": scores
     })
 
 
 async def handle_client(websocket):
-    """
-    Wird automatisch aufgerufen,
-    sobald sich ein Client verbindet.
-    """
+    global next_player_id
 
     connected_clients.add(websocket)
 
+    player_id = f"Player {next_player_id}"
+    next_player_id += 1
+
+    client_ids[websocket] = player_id
+    scores[player_id] = 0
+
     client_addr = websocket.remote_address
-    print(f"(server) Client verbunden: {client_addr}")
+    print(f"(server) {player_id} verbunden: {client_addr}")
+
+    await websocket.send(json.dumps({
+        "type": "welcome",
+        "player_id": player_id,
+        "message": f"Verbunden als {player_id}"
+    }))
 
     await websocket.send(json.dumps({
         "type": "info",
@@ -112,55 +182,39 @@ async def handle_client(websocket):
 
     try:
         async for message in websocket:
-            print(f"(server) Antwort erhalten von {client_addr}: {message}")
+            print(f"(server) Antwort erhalten von {player_id}: {message}")
 
-            if not game_started:
+            if not game_started or current_question is None:
                 await websocket.send(json.dumps({
                     "type": "info",
-                    "message": f"Spiel startet erst bei {MIN_PLAYERS} Spielern."
+                    "message": "Aktuell läuft keine Frage."
                 }))
                 continue
 
-            if current_question is None:
+            if player_id in answers:
                 await websocket.send(json.dumps({
-                    "type": "error",
-                    "message": "Keine aktuelle Frage vorhanden."
+                    "type": "info",
+                    "message": "Du hast für diese Runde bereits geantwortet."
                 }))
                 continue
 
-            user_answer = message.strip()
-            correct_answer = current_question["antwort"].strip()
-
-            is_correct = user_answer.lower() == correct_answer.lower()
-
-            answers[str(client_addr)] = {
-                "answer": user_answer,
-                "correct": is_correct
-            }
-
-            if is_correct:
-                response_text = "Richtig!"
-            else:
-                response_text = f"Falsch! Richtige Antwort: {correct_answer}"
+            answers[player_id] = message
 
             await websocket.send(json.dumps({
-                "type": "response",
-                "message": response_text
+                "type": "info",
+                "message": "Antwort gespeichert."
             }))
 
     except websockets.ConnectionClosed:
-        print(f"(server) Verbindung getrennt: {client_addr}")
+        print(f"(server) Verbindung getrennt: {player_id}")
 
     finally:
         connected_clients.remove(websocket)
+        client_ids.pop(websocket, None)
         print(f"(server) Aktive Clients: {len(connected_clients)}")
 
 
 async def start_server():
-    """
-    Startet den WebSocket-Server.
-    """
-
     print(f"(server) läuft auf ws://{SERVER_IP}:{SERVER_PORT}")
     print(f"(server) Warte auf mindestens {MIN_PLAYERS} Spieler...")
 

@@ -21,9 +21,5 @@ pip install -r requirements.txt
 --------------------------------------------------
 questions via db mongodb or tinydb
 
-- Fragen gleichzeitig an Client 
-- Jeder Client bekommt gleiche Frage
-- Jeder Client hat begrenzt Zeit Frage zu beantworten
-- Timer 10 Sekunden
-- kein timeout bei richtiger antwort 
-- ui für clients
+
+
