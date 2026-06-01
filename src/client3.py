@@ -191,16 +191,31 @@ class QuizClientGUI(QWidget):
     def show_result(self, data):
         self.countdown_timer.stop()
 
+        your_answer = data["your_answer"]
         correct_answer = data["correct_answer"]
-        scores = data.get("scores", {})
+        is_correct = data["correct"]
+        score = data["score"]
 
-        self.question_label.setText(f"Richtige Antwort: {correct_answer}")
-        self.status_label.setText("Warte auf nächste Frage...")
+        self.score = score
+        self.score_label.setText(f"Score: {self.score}")
+
+        if your_answer is None:
+            your_answer = "Keine Antwort"
+
+        result_text = (
+            f"Deine Antwort: {your_answer}\n"
+            f"Richtige Antwort: {correct_answer}\n"
+        )
+
+        if is_correct:
+            result_text += "\n✅ Richtig!"
+        else:
+            result_text += "\n❌ Falsch!"
+
+        self.question_label.setText(result_text)
+
+        self.status_label.setText("Nächste Runde startet...")
         self.timer_label.setText("Timer: --")
-
-        if self.player_id in scores:
-            self.score = scores[self.player_id]
-            self.score_label.setText(f"Score: {self.score}")
 
         self.answer_input.setDisabled(True)
         self.send_button.setDisabled(True)

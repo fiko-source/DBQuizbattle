@@ -50,6 +50,7 @@ async def broadcast(message):
 
     for client in disconnected_clients:
         connected_clients.remove(client)
+        client_ids.pop(client, None)
 
 
 async def start_game_if_ready():
@@ -120,20 +121,15 @@ async def evaluate_round():
 
     results = {}
 
-    for client in connected_clients:
+    for client in connected_clients.copy():
         client_id = client_ids[client]
 
         user_answer = answers.get(client_id)
 
         if user_answer is None:
-            results[client_id] = {
-                "answer": None,
-                "correct": False
-            }
-            scores[client_id] = scores.get(client_id, 0)
-            continue
-
-        is_correct = user_answer.strip().lower() == correct_answer
+            is_correct = False
+        else:
+            is_correct = user_answer.strip().lower() == correct_answer
 
         if is_correct:
             scores[client_id] = scores.get(client_id, 0) + 1
@@ -145,12 +141,17 @@ async def evaluate_round():
             "correct": is_correct
         }
 
-    await broadcast({
-        "type": "result",
-        "correct_answer": current_question["antwort"],
-        "results": results,
-        "scores": scores
-    })
+    for client in connected_clients.copy():
+        client_id = client_ids[client]
+        user_result = results[client_id]
+
+        await client.send(json.dumps({
+            "type": "result",
+            "your_answer": user_result["answer"],
+            "correct": user_result["correct"],
+            "correct_answer": current_question["antwort"],
+            "score": scores[client_id]
+        }))
 
 
 async def handle_client(websocket):
