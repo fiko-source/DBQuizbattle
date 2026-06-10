@@ -100,7 +100,8 @@ erhalten.
 
 ## Spielablauf
 
-Das Spiel beginnt bei drei verbundenen Clients. Jede Frage läuft 20 Sekunden.
+Das Spiel beginnt, sobald mindestens ein Client verbunden ist. Jede Frage läuft
+20 Sekunden.
 Jede dritte Runde ist eine Teamrunde. Teams bestehen aus genau zwei Spielern.
 Bei einer ungeraden Spielerzahl beantwortet der verbleibende Spieler die Runde
 individuell. Teammitglieder können Nachrichten austauschen; die zuletzt
@@ -138,7 +139,7 @@ abgestürzten Server unterscheiden.
 
 ## Einfacher Failover-Test
 
-1. Drei Server und mindestens drei Clients auf verschiedenen Rechnern starten.
+1. Drei Server und mindestens einen Client auf verschiedenen Rechnern starten.
 2. In den Server-Logs prüfen, dass der Server mit der höchsten ID Leader ist.
 3. Den Leader während einer Runde mit `Ctrl+C` beenden.
 4. Nach ungefähr vier Sekunden wird der Ausfall erkannt und LCR erneut gestartet.

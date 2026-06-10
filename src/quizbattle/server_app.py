@@ -141,6 +141,13 @@ class QuizServer:
             self.client_acks[token] = last_seq
             self.client_last_send[token] = time.monotonic()
             player = self.game.state["players"][token]
+            logging.info(
+                "Client verbunden: %s (Spieler-ID %s), Spieler %s/%s",
+                player["name"],
+                player["player_id"],
+                len(self.connections),
+                MIN_PLAYERS,
+            )
 
             await websocket.send(
                 json.dumps(
@@ -203,6 +210,14 @@ class QuizServer:
     def remove_connection(self, token):
         self.connections.pop(token, None)
         self.client_last_send.pop(token, None)
+        player = self.game.state["players"].get(token)
+        if player:
+            logging.info(
+                "Client getrennt: %s (Spieler-ID %s), noch %s verbunden",
+                player["name"],
+                player["player_id"],
+                len(self.connections),
+            )
 
     async def stop(self):
         if self.retry_task:
