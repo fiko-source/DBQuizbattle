@@ -1,3 +1,5 @@
+"""Startpunkt eines QuizBattle-Servers."""
+
 import argparse
 import asyncio
 import logging
@@ -8,6 +10,7 @@ from quizbattle.settings import DEFAULT_DISCOVERY_PORT, ServerConfig
 
 
 def parse_config():
+    """Lese Server-ID, LAN-Adresse und Ports aus der Kommandozeile."""
     parser = argparse.ArgumentParser(description="Distributed QuizBattle server")
     parser.add_argument("--id", type=int, required=True)
     parser.add_argument("--host", help="LAN IP advertised to other computers")
@@ -29,6 +32,7 @@ def parse_config():
 
 
 async def main():
+    """Konfiguriere Logging und betreibe den Server bis zum Programmende."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
@@ -42,6 +46,7 @@ async def main():
 
 if __name__ == "__main__":
     try:
+        # asyncio.run erstellt und schliesst den zentralen Event-Loop.
         asyncio.run(main())
     except KeyboardInterrupt:
         pass

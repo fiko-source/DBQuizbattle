@@ -1,3 +1,5 @@
+"""Tests fuer Ringbildung, LCR-Wahl und Zustandsreplikation."""
+
 import sys
 import unittest
 from pathlib import Path
@@ -11,6 +13,7 @@ from quizbattle.settings import ServerConfig
 
 
 def config(server_id=20):
+    """Erzeuge eine kleine Serverkonfiguration fuer isolierte Clustertests."""
     return ServerConfig(
         server_id=server_id,
         host=f"192.168.1.{server_id}",
@@ -23,6 +26,7 @@ def config(server_id=20):
 
 
 def cluster(server_id=20):
+    """Erzeuge einen ClusterManager ohne echte Netzwerkverbindungen."""
     state = initial_state()
     return ClusterManager(
         config(server_id),
@@ -33,7 +37,10 @@ def cluster(server_id=20):
 
 
 class ClusterTests(unittest.IsolatedAsyncioTestCase):
+    """Pruefe zentrale Regeln des Serverclusters."""
+
     def test_ring_is_sorted_and_wraps(self):
+        """Der Ring muss sortiert sein und nach der groessten ID umbrechen."""
         manager = cluster(30)
         manager.peers = {
             20: {"host": "x", "control_port": 1},
@@ -43,6 +50,7 @@ class ClusterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager.successor(), 10)
 
     def test_stale_gossip_cannot_revive_failed_server(self):
+        """Indirekte alte Daten duerfen einen ausgefallenen Peer nicht reaktivieren."""
         manager = cluster()
         manager.dead_peers.add(30)
         changed = manager.register_peer(
@@ -58,6 +66,7 @@ class ClusterTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(30, manager.peers)
 
     async def test_lcr_replaces_smaller_candidate_with_own_id(self):
+        """LCR ersetzt eine kleinere Kandidaten-ID durch die eigene ID."""
         manager = cluster(20)
         manager.peers = {
             30: {"host": "x", "control_port": 1},
@@ -66,6 +75,7 @@ class ClusterTests(unittest.IsolatedAsyncioTestCase):
         sent = []
 
         async def capture(message, server_id, retries=3):
+            """Zeichne den simulierten Kontrollversand fuer die Pruefung auf."""
             sent.append((message, server_id))
             return {"type": "CONTROL_ACK"}
 
@@ -75,6 +85,7 @@ class ClusterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent[0][1], 30)
 
     async def test_replication_requires_matching_version_ack(self):
+        """Nur ein ACK derselben Version gilt als erfolgreiche Replikation."""
         state = initial_state()
         state["version"] = 7
         manager = ClusterManager(
@@ -90,6 +101,7 @@ class ClusterTests(unittest.IsolatedAsyncioTestCase):
         }
 
         async def acknowledge(_message, server_id, retries=3):
+            """Simuliere ein aktuelles und ein veraltetes Backup-ACK."""
             version = 7 if server_id == 10 else 6
             return {"state_version": version}
 

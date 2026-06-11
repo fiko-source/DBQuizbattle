@@ -1,3 +1,5 @@
+"""Zentrale, replizierbare Spiellogik des QuizBattle-Servers."""
+
 import asyncio
 import random
 import time
@@ -9,6 +11,7 @@ from .settings import MIN_PLAYERS, PROJECT_DIR, RESULT_TIME, ROUND_TIME
 
 
 def load_questions():
+    """Lade alle Quizfragen aus der projektlokalen TinyDB-Datenbank."""
     database = TinyDB(PROJECT_DIR / "tinydb.json")
     try:
         return database.all()
@@ -17,6 +20,9 @@ def load_questions():
 
 
 def initial_state():
+    """Erzeuge einen frischen Spielzustand mit allen replizierten Feldern."""
+    # Der Zustand besteht nur aus JSON-kompatiblen Werten. Dadurch kann er
+    # einfach kopiert, ueber TCP versendet und von einem Backup uebernommen werden.
     return {
         "version": 0,
         "phase": "waiting",
@@ -37,7 +43,10 @@ def initial_state():
 
 
 class QuizGame:
+    """Verwalte Spieler, Runden, Antworten, Teams und Punktestaende."""
+
     def __init__(self, connected_tokens, emit_event, replicate_state):
+        """Verbinde die Spiellogik ueber Callbacks mit Server und Cluster."""
         self.connected_tokens = connected_tokens
         self.emit_event = emit_event
         self.replicate_state = replicate_state
@@ -45,12 +54,17 @@ class QuizGame:
         self.state = initial_state()
 
     def replace_state(self, state):
+        """Ersetze den lokalen Zustand durch eine Replik des Leaders."""
         self.state = state
 
     def mark_changed(self):
+        """Erhoehe die Version nach jeder inhaltlichen Zustandsaenderung."""
         self.state["version"] = self.state.get("version", 0) + 1
 
     async def add_or_resume_player(self, requested_token, name):
+        """Setze eine bekannte Sitzung fort oder registriere einen neuen Spieler."""
+        # Ein Token bleibt beim Client ueber Reconnects erhalten. Dadurch bekommt
+        # derselbe Spieler nach einem Leaderwechsel keinen zweiten Eintrag.
         if requested_token in self.state["players"]:
             return requested_token
 
@@ -66,8 +80,11 @@ class QuizGame:
         return token
 
     async def handle_action(self, token, message):
+        """Pruefe und verarbeite Antwort-, Teamantwort- oder Chataktionen."""
         request_id = message.get("request_id")
         processed = self.state["processed_requests"]
+        # Eine erneut gesendete Aktion liefert nur ihr altes Ergebnis. Das macht
+        # Wiederholungen nach Paket- oder Verbindungsverlust idempotent.
         if request_id and request_id in processed:
             return processed[request_id]
 
@@ -87,6 +104,7 @@ class QuizGame:
                 or self.team_for(token) is None
             )
         ):
+            # In einer Einzelrunde darf jeder Spieler genau eine Antwort abgeben.
             if token in self.state["answers"]:
                 status = "Antwort wurde bereits gespeichert."
                 await self.remember_request(request_id, status)
@@ -99,6 +117,8 @@ class QuizGame:
             return status
 
         if message_type == "TEAM_ANSWER" and answer and self.state["team_round"]:
+            # Eine neue Teamantwort ersetzt eine vorherige gemeinsame Antwort;
+            # alle Teammitglieder erhalten spaeter dasselbe Ergebnis.
             team_id = self.team_for(token)
             if not team_id:
                 status = "Du bist keinem Team zugeordnet."
@@ -116,6 +136,8 @@ class QuizGame:
             return status
 
         if message_type == "TEAM_CHAT" and self.state["team_round"]:
+            # Chattexte werden begrenzt, bevor sie als geordnetes Ereignis an
+            # alle Clients verteilt werden.
             team_id = self.team_for(token)
             text = str(message.get("message", "")).strip()[:200]
             if team_id and text:
@@ -132,6 +154,7 @@ class QuizGame:
         return None
 
     async def remember_request(self, request_id, status, replicate=True):
+        """Merke das Ergebnis einer Aktion fuer deduplizierte Wiederholungen."""
         if not request_id:
             return
         self.state["processed_requests"][request_id] = status
@@ -143,15 +166,19 @@ class QuizGame:
             await self.replicate_state()
 
     def team_for(self, token):
+        """Finde das Team, in dem ein bestimmter Spielertoken enthalten ist."""
         for team_id, members in self.state["teams"].items():
             if token in members:
                 return team_id
         return None
 
     async def run(self, is_leader):
+        """Fuehre als Leader den Zustandsautomaten des Spiels dauerhaft aus."""
         while is_leader():
             phase = self.state["phase"]
             if phase == "waiting":
+                # Die Fragefolge wird einmal gemischt und als Teil des Zustands
+                # repliziert, damit ein neuer Leader dieselbe Reihenfolge fortsetzt.
                 if len(self.connected_tokens()) >= MIN_PLAYERS:
                     if not self.state["question_order"]:
                         order = list(range(len(self.questions)))
@@ -162,6 +189,8 @@ class QuizGame:
                 else:
                     await asyncio.sleep(0.5)
             elif phase == "question":
+                # Gespeicherte absolute Deadlines bleiben auch nach einer
+                # Uebernahme durch einen neuen Leader sinnvoll.
                 await asyncio.sleep(max(0, self.state["deadline"] - time.time()))
                 if is_leader() and self.state["phase"] == "question":
                     await self.evaluate_round()
@@ -173,6 +202,7 @@ class QuizGame:
                 await asyncio.sleep(1)
 
     async def start_next_round(self):
+        """Beende gegebenenfalls das Spiel oder veroeffentliche die naechste Frage."""
         round_number = self.state["round"] + 1
         order = self.state["question_order"]
         if round_number > len(order):
@@ -186,6 +216,7 @@ class QuizGame:
             return
 
         question = self.questions[order[round_number - 1]]
+        # Jede dritte Runde ist eine Teamrunde.
         team_round = round_number % 3 == 0
         self.state.update(
             {
@@ -203,6 +234,8 @@ class QuizGame:
         if round_number > 1:
             await self.emit_event("NEXT_ROUND", round=round_number)
         await self.emit_event("ROUND_START", round=round_number)
+        # Die getrennten Ereignisse machen die Phasen fuer Clients eindeutig
+        # nachvollziehbar und erhalten jeweils eine Sequenznummer.
         await self.emit_event(
             "QUESTION",
             round=round_number,
@@ -220,6 +253,7 @@ class QuizGame:
         )
 
     def create_teams(self):
+        """Mische verbundene Spieler und bilde Zweiergruppen."""
         players = list(self.connected_tokens())
         random.shuffle(players)
         return {
@@ -228,6 +262,7 @@ class QuizGame:
         }
 
     def public_teams(self):
+        """Wandle interne Tokens in fuer Clients geeignete Teamdaten um."""
         return {
             team: [
                 {
@@ -240,16 +275,20 @@ class QuizGame:
         }
 
     def public_scores(self):
+        """Erzeuge eine Ranglistenansicht ohne geheime Sitzungstokens."""
         return {
             self.state["players"][token]["name"]: score
             for token, score in self.state["scores"].items()
         }
 
     async def evaluate_round(self):
+        """Vergleiche Antworten, vergebe Punkte und veroeffentliche das Ergebnis."""
         correct = self.state["question"]["antwort"].strip().casefold()
         results = {}
 
         if self.state["team_round"]:
+            # Teammitglieder teilen Antwort und Bewertung. Nicht zugeordnete
+            # Spieler, etwa bei ungerader Anzahl, werden einzeln ausgewertet.
             team_members = set()
             for team, members in self.state["teams"].items():
                 team_members.update(members)

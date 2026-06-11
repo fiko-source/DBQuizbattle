@@ -1,3 +1,5 @@
+"""Startpunkt fuer den grafischen QuizBattle-Client."""
+
 import argparse
 import socket
 import sys
@@ -9,6 +11,7 @@ from quizbattle.settings import ClientConfig, DEFAULT_DISCOVERY_PORT
 
 
 def parse_config():
+    """Lese die Kommandozeilenargumente und baue die Client-Konfiguration."""
     parser = argparse.ArgumentParser(description="QuizBattle GUI client")
     parser.add_argument("--name", default=socket.gethostname())
     parser.add_argument("--discovery-port", type=int, default=DEFAULT_DISCOVERY_PORT)
@@ -22,6 +25,7 @@ def parse_config():
 
 
 if __name__ == "__main__":
+    # PyQt verwaltet die grafische Oberflaeche in seinem eigenen Event-Loop.
     app = QApplication(sys.argv)
     window = QuizWindow(parse_config())
     window.show()

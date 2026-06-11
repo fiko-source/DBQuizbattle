@@ -1,3 +1,5 @@
+"""Grafische PyQt-Oberflaeche des QuizBattle-Clients."""
+
 import time
 
 from PyQt6.QtCore import QObject, QTimer, Qt, pyqtSignal
@@ -15,18 +17,25 @@ from .client_network import NetworkClient
 
 
 class Signals(QObject):
+    """Transportiere Daten sicher vom Netzwerkthread in den PyQt-Hauptthread."""
+
     message = pyqtSignal(dict)
     status = pyqtSignal(str)
 
 
 class QuizWindow(QWidget):
+    """Zeige Fragen, Eingaben, Teamchat, Ergebnisse und Verbindungsstatus."""
+
     def __init__(self, config):
+        """Erzeuge Fensterzustand, Signale und den Netzwerkclient."""
         super().__init__()
         self.player_id = None
         self.team_round = False
         self.team_name = None
         self.deadline = 0
 
+        # Qt-Signale verhindern, dass der Netzwerkthread GUI-Elemente direkt
+        # veraendert. Direkte Zugriffe aus fremden Threads waeren unsicher.
         self.signals = Signals()
         self.signals.message.connect(self.handle_message)
         self.signals.status.connect(self.set_status)
@@ -40,6 +49,7 @@ class QuizWindow(QWidget):
         self.network.start()
 
     def build_ui(self, name):
+        """Erzeuge und verbinde alle sichtbaren Bedienelemente."""
         self.setWindowTitle(f"QuizBattle - {name}")
         self.resize(700, 520)
         self.score_label = QLabel("Punkte: 0")
@@ -86,15 +96,18 @@ class QuizWindow(QWidget):
         self.set_inputs(False)
 
     def set_status(self, text):
+        """Zeige eine kurze Statusmeldung am unteren Fensterrand."""
         self.status_label.setText(text)
 
     def set_inputs(self, enabled):
+        """Aktiviere Eingaben nur waehrend der erlaubten Antwortphase."""
         self.answer_input.setEnabled(enabled)
         self.answer_button.setEnabled(enabled)
         self.chat_input.setEnabled(enabled and self.team_round)
         self.chat_button.setEnabled(enabled and self.team_round)
 
     def update_timer(self):
+        """Berechne aus dem Server-Zeitstempel die verbleibenden Sekunden."""
         if not self.deadline:
             self.timer_label.setText("Zeit: --")
             return
@@ -104,6 +117,7 @@ class QuizWindow(QWidget):
             self.set_inputs(False)
 
     def send_answer(self):
+        """Sende die eingegebene Einzel- oder Teamantwort an den Leader."""
         answer = self.answer_input.text().strip()
         if not answer:
             return
@@ -114,12 +128,14 @@ class QuizWindow(QWidget):
         self.answer_button.setEnabled(False)
 
     def send_chat(self):
+        """Sende eine Chatnachricht, wenn der Client in einer Teamrunde ist."""
         text = self.chat_input.text().strip()
         if text:
             self.network.send({"type": "TEAM_CHAT", "message": text})
             self.chat_input.clear()
 
     def handle_message(self, message):
+        """Ordne jede empfangene Nachrichtenart der passenden Anzeigeaktion zu."""
         message_type = message.get("type")
         if message_type == "WELCOME":
             self.player_id = message["player_id"]
@@ -156,6 +172,7 @@ class QuizWindow(QWidget):
             self.show_game_over(message)
 
     def show_question(self, message):
+        """Zeige eine neue Frage und ermittle eine moegliche Teamzuordnung."""
         self.team_round = False
         self.deadline = message["deadline"]
         self.question_label.setText(
@@ -164,6 +181,8 @@ class QuizWindow(QWidget):
         self.chat_view.clear()
         self.team_name = None
         if message["team_round"]:
+            # Der Server sendet alle Teams. Die GUI sucht darin anhand der
+            # eigenen Spieler-ID das Team dieses Clients.
             for team, members in message["teams"].items():
                 if any(
                     member["player_id"] == self.player_id for member in members
@@ -178,6 +197,7 @@ class QuizWindow(QWidget):
         self.set_inputs(False)
 
     def show_result(self, message):
+        """Zeige Auswertung, richtige Antwort und aktuellen Punktestand."""
         self.deadline = 0
         self.set_inputs(False)
         result = message["results"].get(self.player_id, {})
@@ -191,6 +211,7 @@ class QuizWindow(QWidget):
         )
 
     def show_game_over(self, message):
+        """Sortiere die Endpunktestaende und zeige die Rangliste."""
         ranking = sorted(
             message["scores"].items(),
             key=lambda item: item[1],

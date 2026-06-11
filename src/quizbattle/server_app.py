@@ -1,3 +1,5 @@
+"""Verknuepfung von WebSocket-Clients, Spiellogik und Servercluster."""
+
 import asyncio
 import json
 import logging
@@ -11,7 +13,10 @@ from .settings import CLIENT_RETRY_INTERVAL, MIN_PLAYERS
 
 
 class QuizServer:
+    """Betreibe den aktiven Spielserver und seine Clientverbindungen."""
+
     def __init__(self, config):
+        """Erzeuge Spiel und Cluster mit gemeinsamen Callback-Funktionen."""
         self.config = config
         self.connections = {}
         self.client_acks = {}
@@ -33,6 +38,7 @@ class QuizServer:
         )
 
     async def start(self):
+        """Starte WebSocket und Cluster und halte den Serverprozess am Leben."""
         self.ws_server = await websockets.serve(
             self.handle_client,
             self.config.bind_host,
@@ -48,9 +54,12 @@ class QuizServer:
             self.config.control_port,
             self.config.discovery_port,
         )
+        # Ein nie abgeschlossener Future haelt den Haupttask aktiv. Beendet wird
+        # der Prozess durch Abbruch, worauf main() stop() aufruft.
         await asyncio.Future()
 
     async def on_became_leader(self):
+        """Starte den Spielablauf genau einmal, sobald dieser Server Leader wird."""
         if self.game_task and not self.game_task.done():
             return
         self.game_task = asyncio.create_task(
@@ -58,9 +67,12 @@ class QuizServer:
         )
 
     async def replicate_state(self):
+        """Delegiere die Zustandsreplikation an den ClusterManager."""
         return await self.cluster.replicate_state()
 
     async def emit_event(self, event_type, **data):
+        """Erzeuge ein geordnetes Spielereignis, repliziere und verteile es."""
+        # Der Leader ist der Sequencer: Nur hier wird die globale Nummer erhoeht.
         self.game.state["sequence"] += 1
         self.game.mark_changed()
         event = {
@@ -77,6 +89,7 @@ class QuizServer:
         return event
 
     async def broadcast_clients(self, event):
+        """Sende ein Ereignis an alle verbundenen Clients."""
         payload = json.dumps(event, ensure_ascii=False)
         dead = []
         for token, websocket in list(self.connections.items()):
@@ -89,6 +102,7 @@ class QuizServer:
             self.remove_connection(token)
 
     async def client_retry_loop(self):
+        """Wiederhole das naechste unbestaetigte Ereignis fuer jeden Client."""
         while True:
             await asyncio.sleep(0.5)
             now = time.monotonic()
@@ -98,6 +112,8 @@ class QuizServer:
                     < CLIENT_RETRY_INTERVAL
                 ):
                     continue
+                # ACK n bedeutet: Bis einschliesslich n wurde alles geordnet
+                # verarbeitet. Daher ist n + 1 das naechste fehlende Ereignis.
                 next_seq = self.client_acks.get(token, 0) + 1
                 event = self.event_by_sequence(next_seq)
                 if event:
@@ -110,18 +126,23 @@ class QuizServer:
                         self.remove_connection(token)
 
     def event_by_sequence(self, sequence):
+        """Suche ein gespeichertes Ereignis anhand seiner Sequenznummer."""
         for event in self.game.state["events"]:
             if event["seq"] == sequence:
                 return event
         return None
 
     async def send_event_range(self, websocket, start, end=None):
+        """Sende einen zusammenhaengenden Bereich alter Ereignisse erneut."""
         for event in self.game.state["events"]:
             if event["seq"] >= start and (end is None or event["seq"] <= end):
                 await websocket.send(json.dumps(event, ensure_ascii=False))
 
     async def handle_client(self, websocket):
+        """Registriere einen Client und bearbeite seine WebSocket-Sitzung."""
         if not self.cluster.is_leader:
+            # Backups akzeptieren keine Spielsitzungen. Der Client startet nach
+            # NOT_LEADER automatisch eine neue Discovery.
             await websocket.send(json.dumps({"type": "NOT_LEADER"}))
             await websocket.close()
             return
@@ -133,6 +154,8 @@ class QuizServer:
             if hello.get("type") != "JOIN":
                 return
 
+            # Ein vorhandener Token setzt dieselbe Identitaet samt Punktestand
+            # nach Reconnect oder Leaderwechsel fort.
             token = await self.game.add_or_resume_player(
                 hello.get("token"), hello.get("name")
             )
@@ -161,6 +184,8 @@ class QuizServer:
                     ensure_ascii=False,
                 )
             )
+            # Vor neuen Live-Ereignissen erhaelt der Client alles, was ihm seit
+            # seiner letzten bestaetigten Sequenznummer fehlt.
             await self.send_event_range(websocket, last_seq + 1)
             await self.emit_event(
                 "PLAYER_COUNT",
@@ -181,6 +206,7 @@ class QuizServer:
                 self.remove_connection(token)
 
     async def handle_client_message(self, token, websocket, message):
+        """Verarbeite ACKs, Nachforderungen und Aktionen eines Clients."""
         message_type = message.get("type")
         if message_type == "ACK":
             self.client_acks[token] = max(
@@ -208,6 +234,7 @@ class QuizServer:
             )
 
     def remove_connection(self, token):
+        """Entferne eine WebSocket-Verbindung, behalte aber den Spielerzustand."""
         self.connections.pop(token, None)
         self.client_last_send.pop(token, None)
         player = self.game.state["players"].get(token)
@@ -220,6 +247,7 @@ class QuizServer:
             )
 
     async def stop(self):
+        """Beende Hintergrundtasks, Listener und Clusterverbindungen."""
         if self.retry_task:
             self.retry_task.cancel()
         if self.game_task:
