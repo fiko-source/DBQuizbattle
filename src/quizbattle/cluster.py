@@ -7,6 +7,7 @@ import time
 
 from .control import ReliableControlChannel
 from .discovery import BroadcastEndpoint
+from .identity import normalize_uuid, uuid_order_key
 from .settings import HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT
 
 
@@ -22,7 +23,7 @@ class ClusterManager:
 
         self.peers = {}
         self.dead_peers = set()
-        self.leader_id = None
+        self.leader_uuid = None
         self.participant = False
 
         self.tasks = []
@@ -44,16 +45,19 @@ class ClusterManager:
     @property
     def is_leader(self):
         """Zeige an, ob dieser Prozess momentan der gewaehlte Leader ist."""
-        return self.leader_id == self.config.server_id
+        return self.leader_uuid == self.config.server_uuid
 
     def ring(self):
-        """Gib alle bekannten Server-IDs in der logischen Ringreihenfolge zurueck."""
-        return sorted([self.config.server_id, *self.peers])
+        """Gib alle bekannten Server-UUIDs in der logischen Ringreihenfolge zurueck."""
+        return sorted(
+            [self.config.server_uuid, *self.peers],
+            key=uuid_order_key,
+        )
 
     def successor(self):
         """Bestimme den naechsten Server im zyklischen, sortierten Ring."""
         ring = self.ring()
-        index = ring.index(self.config.server_id)
+        index = ring.index(self.config.server_uuid)
         return ring[(index + 1) % len(ring)]
 
     async def start(self):
@@ -76,11 +80,11 @@ class ClusterManager:
     def server_address(self):
         """Erzeuge die im Netzwerk bekannt gegebene Beschreibung dieses Servers."""
         return {
-            "server_id": self.config.server_id,
+            "server_uuid": self.config.server_uuid,
             "host": self.config.host,
             "ws_port": self.config.ws_port,
             "control_port": self.config.control_port,
-            "leader_id": self.leader_id,
+            "leader_uuid": self.leader_uuid,
         }
 
     def server_message(self, message_type):
@@ -108,7 +112,7 @@ class ClusterManager:
                 await self.send_discovery(
                     {
                         "type": "LEADER_RESPONSE",
-                        "server_id": self.config.server_id,
+                        "server_uuid": self.config.server_uuid,
                         "host": self.config.host,
                         "ws_port": self.config.ws_port,
                     },
@@ -124,53 +128,56 @@ class ClusterManager:
 
         if message_type not in {"SERVER_JOIN", "HEARTBEAT", "SERVER_LEAVE"}:
             return
-        server_id = message.get("server_id")
-        if not isinstance(server_id, int) or server_id == self.config.server_id:
+        try:
+            server_uuid = normalize_uuid(message.get("server_uuid"))
+        except (TypeError, ValueError, AttributeError):
+            return
+        if server_uuid == self.config.server_uuid:
             return
 
         if message_type == "SERVER_LEAVE":
             # Ein sauber beendeter Leader loest sofort eine Neuwahl aus; bei
             # einem Absturz uebernimmt dies spaeter der Heartbeat-Monitor.
-            was_leader = server_id == self.leader_id
-            self.remove_peer(server_id)
+            was_leader = server_uuid == self.leader_uuid
+            self.remove_peer(server_uuid)
             if was_leader:
                 await self.start_election(force=True)
             return
 
         is_new = self.register_peer(message, directly_seen=True)
-        announced_leader = message.get("leader_id")
-        if self.leader_id is None and isinstance(announced_leader, int):
-            self.leader_id = announced_leader
+        announced_leader = message.get("leader_uuid")
+        if self.leader_uuid is None and announced_leader:
+            self.leader_uuid = normalize_uuid(announced_leader)
         if message_type == "SERVER_JOIN":
             await self.send_discovery(self.server_message("HEARTBEAT"), address)
         if is_new:
-            logging.info("Server %s entdeckt. Ring: %s", server_id, self.ring())
+            logging.info("Server %s entdeckt. Ring: %s", server_uuid, self.ring())
             # PEER_HELLO bestaetigt die Erreichbarkeit ueber den zuverlaessigen
             # TCP-Kanal und gleicht danach Wahl und Zustand ab.
             await self.send_control(
-                self.server_message("PEER_HELLO"), server_id
+                self.server_message("PEER_HELLO"), server_uuid
             )
             if self.is_leader:
-                await self.replicate_to_peer(server_id)
-            elif self.leader_id in self.peers:
+                await self.replicate_to_peer(server_uuid)
+            elif self.leader_uuid in self.peers:
                 await self.synchronize_from_leader()
             await self.start_election(force=True)
 
     def register_peer(self, message, directly_seen=True):
         """Speichere oder aktualisiere einen Server in der lokalen Ringansicht."""
-        server_id = int(message["server_id"])
+        server_uuid = normalize_uuid(message["server_uuid"])
         # Ein nur ueber andere Server gemeldeter Peer darf einen bereits als
         # ausgefallen erkannten Eintrag nicht versehentlich wiederbeleben.
-        if not directly_seen and server_id in self.dead_peers:
+        if not directly_seen and server_uuid in self.dead_peers:
             return False
         if directly_seen:
-            self.dead_peers.discard(server_id)
+            self.dead_peers.discard(server_uuid)
 
-        is_new = server_id not in self.peers
+        is_new = server_uuid not in self.peers
         last_seen = time.monotonic()
         if not is_new and not directly_seen:
-            last_seen = self.peers[server_id]["last_seen"]
-        self.peers[server_id] = {
+            last_seen = self.peers[server_uuid]["last_seen"]
+        self.peers[server_uuid] = {
             "host": message["host"],
             "ws_port": int(message["ws_port"]),
             "control_port": int(message["control_port"]),
@@ -178,11 +185,11 @@ class ClusterManager:
         }
         return is_new
 
-    def remove_peer(self, server_id):
+    def remove_peer(self, server_uuid):
         """Entferne einen Server und merke ihn als ausgefallen."""
-        self.peers.pop(server_id, None)
-        self.dead_peers.add(server_id)
-        self.control.forget_peer(server_id)
+        self.peers.pop(server_uuid, None)
+        self.dead_peers.add(server_uuid)
+        self.control.forget_peer(server_uuid)
 
     async def heartbeat_loop(self):
         """Melde die eigene Erreichbarkeit und verteile regelmaessig die Ringansicht."""
@@ -191,23 +198,23 @@ class ClusterManager:
             await self.broadcast_announcement("HEARTBEAT")
             heartbeat = {
                 "type": "CONTROL_HEARTBEAT",
-                "leader_id": self.leader_id,
+                "leader_uuid": self.leader_uuid,
                 "members": [
                     {
-                        "server_id": server_id,
+                        "server_uuid": server_uuid,
                         "host": peer["host"],
                         "ws_port": peer["ws_port"],
                         "control_port": peer["control_port"],
                     }
-                    for server_id, peer in self.peers.items()
+                    for server_uuid, peer in self.peers.items()
                 ],
             }
             # Der zusaetzliche bestaetigte TCP-Heartbeat prueft die tatsaechliche
             # Erreichbarkeit und verteilt bekannte Mitglieder als Gossip.
             await asyncio.gather(
                 *[
-                    self.send_control(heartbeat, server_id, retries=1)
-                    for server_id in list(self.peers)
+                    self.send_control(heartbeat, server_uuid, retries=1)
+                    for server_uuid in list(self.peers)
                 ],
                 return_exceptions=True,
             )
@@ -219,26 +226,32 @@ class ClusterManager:
             await asyncio.sleep(HEARTBEAT_INTERVAL)
             now = time.monotonic()
             expired = [
-                server_id
-                for server_id, peer in self.peers.items()
+                server_uuid
+                for server_uuid, peer in self.peers.items()
                 if now - peer["last_seen"] > HEARTBEAT_TIMEOUT
             ]
-            leader_failed = self.leader_id in expired
-            for server_id in expired:
-                self.remove_peer(server_id)
-                logging.warning("Server %s ausgefallen. Ring: %s", server_id, self.ring())
-            if expired and (leader_failed or self.leader_id not in self.ring()):
+            leader_failed = self.leader_uuid in expired
+            for server_uuid in expired:
+                self.remove_peer(server_uuid)
+                logging.warning(
+                    "Server %s ausgefallen. Ring: %s",
+                    server_uuid,
+                    self.ring(),
+                )
+            if expired and (leader_failed or self.leader_uuid not in self.ring()):
                 await self.start_election(force=True)
 
     async def control_sender_seen(self, sender):
         """Aktualisiere einen Peer, sobald eine TCP-Nachricht von ihm eintrifft."""
         sender_is_new = self.register_peer(sender, directly_seen=True)
         if sender_is_new and self.is_leader:
-            await self.replicate_to_peer(int(sender["server_id"]))
+            await self.replicate_to_peer(
+                normalize_uuid(sender["server_uuid"])
+            )
 
-    async def send_control(self, message, server_id, retries=3):
+    async def send_control(self, message, server_uuid, retries=3):
         """Leite eine Kontrollnachricht an den zuverlaessigen TCP-Kanal weiter."""
-        return await self.control.send(message, server_id, retries)
+        return await self.control.send(message, server_uuid, retries)
 
     async def handle_control(self, message):
         """Verteile eingehende Kontrollnachrichten auf Wahl und Replikation."""
@@ -258,8 +271,8 @@ class ClusterManager:
         elif message_type == "STATE_REQUEST" and self.is_leader:
             return {"state": self.get_state()}
         elif message_type == "PEER_HELLO":
-            server_id = int(message["server_id"])
-            if server_id != self.config.server_id:
+            server_uuid = normalize_uuid(message["server_uuid"])
+            if server_uuid != self.config.server_uuid:
                 is_new = self.register_peer(message, directly_seen=True)
                 if is_new:
                     await self.start_election(force=True)
@@ -267,37 +280,38 @@ class ClusterManager:
             # Mitglieder aus fremden Ringansichten werden indirekt registriert.
             # Erst direkter Kontakt entfernt sie aus dead_peers.
             new_peers = []
-            announced_leader = message.get("leader_id")
-            if self.leader_id is None and isinstance(announced_leader, int):
-                self.leader_id = announced_leader
+            announced_leader = message.get("leader_uuid")
+            if self.leader_uuid is None and announced_leader:
+                self.leader_uuid = normalize_uuid(announced_leader)
             for member in message.get("members", []):
-                if int(member["server_id"]) != self.config.server_id:
+                member_uuid = normalize_uuid(member["server_uuid"])
+                if member_uuid != self.config.server_uuid:
                     if self.register_peer(member, directly_seen=False):
-                        new_peers.append(int(member["server_id"]))
+                        new_peers.append(member_uuid)
             if new_peers:
                 logging.info("Ring aktualisiert: %s", self.ring())
                 if self.is_leader:
-                    for server_id in new_peers:
-                        await self.replicate_to_peer(server_id)
-                elif self.leader_id in self.peers:
+                    for server_uuid in new_peers:
+                        await self.replicate_to_peer(server_uuid)
+                elif self.leader_uuid in self.peers:
                     await self.synchronize_from_leader()
                 await self.start_election(force=True)
         return None
 
     async def start_election(self, force=False):
-        """Starte eine LCR-Leaderwahl mit der eigenen Server-ID als Kandidat."""
+        """Starte eine LCR-Leaderwahl mit der eigenen Server-UUID als Kandidat."""
         async with self.election_lock:
             if self.participant and not force:
                 return
             self.participant = True
             message = {
                 "type": "ELECTION",
-                "candidate": self.config.server_id,
+                "candidate": self.config.server_uuid,
             }
             successor = self.successor()
             logging.info("LCR-Wahl gestartet; Nachfolger ist Server %s", successor)
             response = await self.send_control(message, successor)
-            if response is None and successor != self.config.server_id:
+            if response is None and successor != self.config.server_uuid:
                 # Ein nicht erreichbarer Nachfolger wird entfernt. Danach wird
                 # die Wahl mit dem naechsten Ringmitglied neu begonnen.
                 self.remove_peer(successor)
@@ -305,26 +319,26 @@ class ClusterManager:
                 asyncio.create_task(self.start_election(force=True))
 
     async def handle_election(self, message):
-        """Wende die LCR-Regeln auf eine empfangene Kandidaten-ID an."""
-        candidate = int(message["candidate"])
-        # Kehrt die eigene ID zurueck, ist sie einmal um den Ring gelaufen und
-        # damit groesser als alle konkurrierenden IDs.
-        if candidate == self.config.server_id:
+        """Wende die LCR-Regeln auf eine empfangene Kandidaten-UUID an."""
+        candidate = normalize_uuid(message["candidate"])
+        # Kehrt die eigene UUID zurueck, ist sie einmal um den Ring gelaufen und
+        # damit groesser als alle konkurrierenden UUIDs.
+        if candidate == self.config.server_uuid:
             self.participant = False
             await self.become_leader()
             return
 
-        if candidate > self.config.server_id:
-            # Groessere IDs werden unveraendert weitergereicht.
+        if uuid_order_key(candidate) > uuid_order_key(self.config.server_uuid):
+            # Groessere UUIDs werden unveraendert weitergereicht.
             self.participant = True
             forwarded = {"type": "ELECTION", "candidate": candidate}
         elif not self.participant:
-            # Eine kleinere ID wird durch die eigene ersetzt, solange dieser
+            # Eine kleinere UUID wird durch die eigene ersetzt, solange dieser
             # Server in der aktuellen Wahl noch nicht teilgenommen hat.
             self.participant = True
             forwarded = {
                 "type": "ELECTION",
-                "candidate": self.config.server_id,
+                "candidate": self.config.server_uuid,
             }
         else:
             return
@@ -332,14 +346,14 @@ class ClusterManager:
 
     async def become_leader(self):
         """Markiere diesen Server als Leader und verteile das Wahlergebnis."""
-        self.leader_id = self.config.server_id
-        logging.info("Server %s ist neuer Leader.", self.config.server_id)
+        self.leader_uuid = self.config.server_uuid
+        logging.info("Server %s ist neuer Leader.", self.config.server_uuid)
         if len(self.ring()) > 1:
             await self.send_control(
                 {
                     "type": "LEADER",
-                    "leader_id": self.config.server_id,
-                    "origin": self.config.server_id,
+                    "leader_uuid": self.config.server_uuid,
+                    "origin": self.config.server_uuid,
                 },
                 self.successor(),
             )
@@ -347,13 +361,13 @@ class ClusterManager:
 
     async def handle_leader(self, message):
         """Uebernehme und leite das im Ring umlaufende Leader-Ergebnis weiter."""
-        leader_id = int(message["leader_id"])
-        origin = int(message["origin"])
-        self.leader_id = leader_id
+        leader_uuid = normalize_uuid(message["leader_uuid"])
+        origin = normalize_uuid(message["origin"])
+        self.leader_uuid = leader_uuid
         self.participant = False
-        logging.info("LCR-Ergebnis: Server %s ist Leader.", leader_id)
+        logging.info("LCR-Ergebnis: Server %s ist Leader.", leader_uuid)
 
-        if self.config.server_id != origin:
+        if self.config.server_uuid != origin:
             await self.send_control(message, self.successor())
 
         if self.is_leader:
@@ -361,7 +375,10 @@ class ClusterManager:
         else:
             # Ein Backup zieht nach der Wahl den aktuellen Zustand vom Leader,
             # damit es sofort als Ersatz bereitsteht.
-            response = await self.send_control({"type": "STATE_REQUEST"}, leader_id)
+            response = await self.send_control(
+                {"type": "STATE_REQUEST"},
+                leader_uuid,
+            )
             if response and "state" in response:
                 self.set_state(response["state"])
 
@@ -371,25 +388,25 @@ class ClusterManager:
             return set()
         state = copy.deepcopy(self.get_state())
         version = state.get("version", 0)
-        server_ids = list(self.peers)
+        server_uuids = list(self.peers)
         # gather wartet auf alle Backups, ohne die Nachrichten nacheinander zu
         # versenden. Fehler eines einzelnen Backups brechen die anderen nicht ab.
         responses = await asyncio.gather(
             *[
                 self.send_control(
-                    {"type": "REPLICATE", "state": state}, server_id
+                    {"type": "REPLICATE", "state": state}, server_uuid
                 )
-                for server_id in server_ids
+                for server_uuid in server_uuids
             ],
             return_exceptions=True,
         )
         acknowledged = {
-            server_id
-            for server_id, response in zip(server_ids, responses)
+            server_uuid
+            for server_uuid, response in zip(server_uuids, responses)
             if isinstance(response, dict)
             and response.get("state_version") == version
         }
-        missing = set(server_ids) - acknowledged
+        missing = set(server_uuids) - acknowledged
         if missing:
             logging.warning(
                 "Zustand %s nicht von Backups %s bestätigt.",
@@ -398,11 +415,11 @@ class ClusterManager:
             )
         return acknowledged
 
-    async def replicate_to_peer(self, server_id):
+    async def replicate_to_peer(self, server_uuid):
         """Uebertrage den aktuellen Zustand gezielt an einen neuen Server."""
         state = copy.deepcopy(self.get_state())
         response = await self.send_control(
-            {"type": "REPLICATE", "state": state}, server_id
+            {"type": "REPLICATE", "state": state}, server_uuid
         )
         return bool(
             response
@@ -411,10 +428,10 @@ class ClusterManager:
 
     async def synchronize_from_leader(self):
         """Fordere als Backup den vollstaendigen Zustand des Leaders an."""
-        if self.leader_id == self.config.server_id:
+        if self.leader_uuid == self.config.server_uuid:
             return True
         response = await self.send_control(
-            {"type": "STATE_REQUEST"}, self.leader_id
+            {"type": "STATE_REQUEST"}, self.leader_uuid
         )
         if response and "state" in response:
             self.set_state(response["state"])

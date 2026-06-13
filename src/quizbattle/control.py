@@ -3,6 +3,7 @@
 import asyncio
 import uuid
 
+from .identity import normalize_uuid
 from .protocol import read_frame, send_frame
 from .settings import CONTROL_RETRIES, CONTROL_TIMEOUT
 
@@ -77,7 +78,10 @@ class ReliableControlChannel:
             return self.responses[message_id]
 
         sender = message.get("sender")
-        if sender and int(sender["server_id"]) != self.config.server_id:
+        if (
+            sender
+            and normalize_uuid(sender["server_uuid"]) != self.config.server_uuid
+        ):
             await self.sender_seen(sender)
 
         # Ringnachrichten muessen schnell bestaetigt werden. Ihre eigentliche
@@ -101,22 +105,22 @@ class ReliableControlChannel:
 
     async def handle_deferred(self, message):
         """Bearbeite aufgeschobene Nachrichten je Absender in Empfangsreihenfolge."""
-        sender_id = int(message["sender"]["server_id"])
-        lock = self.inbound_locks.setdefault(sender_id, asyncio.Lock())
+        sender_uuid = normalize_uuid(message["sender"]["server_uuid"])
+        lock = self.inbound_locks.setdefault(sender_uuid, asyncio.Lock())
         async with lock:
             await self.message_handler(message)
 
-    async def send(self, message, server_id, retries=CONTROL_RETRIES):
+    async def send(self, message, server_uuid, retries=CONTROL_RETRIES):
         """Sende eine Nachricht bestaetigt an einen Server und wiederhole bei Fehlern."""
-        if server_id == self.config.server_id:
+        if server_uuid == self.config.server_uuid:
             local = self.prepare_message(message)
             return await self.receive(local)
 
-        peer = self.peer_lookup(server_id)
+        peer = self.peer_lookup(server_uuid)
         if not peer:
             return None
 
-        lock = self.peer_locks.setdefault(server_id, asyncio.Lock())
+        lock = self.peer_locks.setdefault(server_uuid, asyncio.Lock())
         # Pro Zielserver sendet nur ein Task gleichzeitig. So bleibt die
         # beobachtete Reihenfolge der Kontrollnachrichten stabil.
         async with lock:
@@ -167,9 +171,9 @@ class ReliableControlChannel:
         ):
             return None
 
-    def forget_peer(self, server_id):
+    def forget_peer(self, server_uuid):
         """Entferne nicht mehr benoetigte Synchronisationsdaten eines Servers."""
-        self.peer_locks.pop(server_id, None)
+        self.peer_locks.pop(server_uuid, None)
 
     async def stop(self):
         """Beende den TCP-Listener kontrolliert."""

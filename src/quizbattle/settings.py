@@ -26,7 +26,7 @@ RESULT_TIME = 4
 class ServerConfig:
     """Alle beim Start festgelegten Adressen und Ports eines Servers."""
 
-    server_id: int
+    server_uuid: str
     host: str
     bind_host: str
     ws_port: int

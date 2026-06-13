@@ -7,7 +7,7 @@ anderen halten als Backups eine replizierte Kopie des Spielzustands.
 ## Umgesetzte Anforderungen
 
 - UDP-Broadcast zur dynamischen Erkennung von Servern und Leader durch Clients
-- logischer Ring, sortiert nach eindeutiger numerischer Server-ID
+- logischer Ring, sortiert nach automatisch erzeugten, dauerhaften Server-UUIDs
 - LCR-Leaderwahl über bestätigte, gerahmte TCP-Nachrichten
 - Heartbeats, Ausfallerkennung und automatische Neuwahl
 - bestätigte Primary-Backup-Replikation des vollständigen Spielzustands
@@ -32,7 +32,8 @@ Alle Geräte müssen sich im selben LAN befinden und UDP-Broadcast erlauben.
 | frei wählbar | TCP | WebSocket-Verbindung der Clients |
 
 Auf verschiedenen Rechnern dürfen WebSocket- und Control-Ports gleich sein.
-Jeder Server braucht lediglich eine weltweit im Quiz-Cluster eindeutige ID.
+Jeder Server erzeugt beim ersten Start automatisch eine weltweit eindeutige
+UUID und verwendet sie bei späteren Starts erneut.
 
 Bei Netzen, die `255.255.255.255` nicht weiterleiten, muss die konkrete
 Broadcast-Adresse verwendet werden, zum Beispiel `192.168.1.255`.
@@ -51,52 +52,141 @@ Unter Windows wird die Umgebung mit `.venv\Scripts\activate` aktiviert.
 
 ## Server auf mehreren Rechnern starten
 
+Ein einzelner Server wird beispielsweise so gestartet:
+
+```bash
+./start-server.sh 5001 6001 192.168.2.176 192.168.2.255
+```
+
+Die vier Argumente haben folgende Bedeutung:
+
+| Argument | Beispiel | Bedeutung |
+| --- | --- | --- |
+| WebSocket-Port | `5001` | TCP-Port, über den sich Clients mit diesem Server verbinden |
+| Control-Port | `6001` | TCP-Port für Wahl, Heartbeats und Replikation zwischen Servern |
+| Server-IP | `192.168.2.176` | Aktuelle LAN- oder WLAN-Adresse dieses Server-Rechners |
+| Broadcast-IP | `192.168.2.255` | Adresse, über die alle Geräte im lokalen Subnetz erreicht werden |
+
+Beim ersten Start erzeugt der Server mit `uuid.uuid4()` eine eigene UUID. Das
+Startskript speichert sie standardmäßig in `.server_uuid_6001`, wobei `6001`
+der Control-Port ist. Beim nächsten Start mit demselben Control-Port wird diese
+Datei wieder geladen. Die Identität bleibt dadurch über Neustarts erhalten.
+
+Die UUID wird nicht von Hand eingegeben. Sie dient als eindeutige Identität,
+zur Sortierung des logischen Rings und als Kandidat in der LCR-Leaderwahl.
+Verglichen wird der vollständige numerische 128-Bit-Wert der UUID.
+
+Der Discovery-Port `5972/UDP` muss nicht im Befehl angegeben werden. Er wird
+standardmäßig von Server und Client verwendet.
+
+Der Befehl bedeutet konkret: Der Server lädt oder erzeugt seine UUID und ist
+unter `192.168.2.176` erreichbar. Clients verbinden sich über Port `5001`,
+andere Server verwenden Port `6001` und Discovery-Nachrichten werden an das
+Netz `192.168.2.255` gesendet.
+
 Beispiel mit drei Rechnern im Netz `192.168.1.0/24`:
 
 Rechner A:
 
 ```bash
-./start-server.sh 10 5000 6000 192.168.1.10 192.168.1.255
+./start-server.sh 5000 6000 192.168.1.10 192.168.1.255
 ```
 
 Rechner B:
 
 ```bash
-./start-server.sh 20 5000 6000 192.168.1.20 192.168.1.255
+./start-server.sh 5000 6000 192.168.1.20 192.168.1.255
 ```
 
 Rechner C:
 
 ```bash
-./start-server.sh 30 5000 6000 192.168.1.30 192.168.1.255
+./start-server.sh 5000 6000 192.168.1.30 192.168.1.255
 ```
 
-Server 30 wird Leader, weil 30 die höchste ID ist. Fällt er aus, wählen die
-verbleibenden Server automatisch Server 20.
+Jeder Rechner besitzt seine eigene UUID-Datei. Der Server mit der numerisch
+größten UUID wird Leader. Fällt er aus, wählen die verbleibenden Server über
+LCR automatisch einen neuen Leader.
+
+Mehrere Server auf demselben Raspberry Pi benötigen unterschiedliche Ports:
+
+```bash
+./start-server.sh 5001 6001 192.168.2.176 192.168.2.255
+./start-server.sh 5002 6002 192.168.2.176 192.168.2.255
+./start-server.sh 5003 6003 192.168.2.176 192.168.2.255
+```
+
+Dabei entstehen automatisch `.server_uuid_6001`, `.server_uuid_6002` und
+`.server_uuid_6003`. Jeder Serverprozess besitzt deshalb eine andere,
+dauerhafte UUID.
+
+Optional kann als fünftes Argument eine eigene Identitätsdatei angegeben
+werden:
+
+```bash
+./start-server.sh 5001 6001 192.168.2.176 192.168.2.255 pi-server.uuid
+```
+
+Wird diese Datei auf einen anderen Rechner kopiert, würde dort dieselbe
+Serveridentität verwendet. Innerhalb eines laufenden Clusters darf deshalb
+niemals dieselbe Identitätsdatei für zwei Server gleichzeitig benutzt werden.
 
 Alternativ kann direkt gestartet werden:
 
 ```bash
 python3 src/server.py \
-  --id 10 \
+  --identity-file .server_uuid_pi \
   --host 192.168.1.10 \
   --ws-port 5000 \
   --control-port 6000 \
   --broadcast 192.168.1.255
 ```
 
+Für reproduzierbare Tests kann stattdessen eine gültige UUID ausdrücklich
+übergeben werden:
+
+```bash
+python3 src/server.py \
+  --uuid 550e8400-e29b-41d4-a716-446655440000 \
+  --host 192.168.1.10 \
+  --ws-port 5000 \
+  --control-port 6000 \
+  --broadcast 192.168.1.255
+```
+
+`--uuid` und `--identity-file` dürfen nicht gleichzeitig verwendet werden.
+
 ## Clients starten
 
 ```bash
-./start-client.sh "Taufik" 192.168.1.255
-./start-client.sh "Musab" 192.168.1.255
-./start-client.sh "Omar" 192.168.1.255
+./start-client.sh "Taufik" 192.168.2.255
+./start-client.sh "Musab" 192.168.2.255
+./start-client.sh "Omar" 192.168.2.255
 ```
 
-Der Client benötigt keine feste Server-IP. Er fragt per Broadcast nach dem
-aktuellen Leader. Nach einem Ausfall sucht er erneut und verbindet sich mit dem
-neu gewählten Leader. Sein Token und die letzte Sequenznummer bleiben dabei
-erhalten.
+Der erste Wert ist der sichtbare Spielername. Der zweite Wert ist die
+Broadcast-Adresse des lokalen Netzwerks. Der Client benötigt weder die feste
+IP-Adresse des Servers noch dessen WebSocket-Port.
+
+### So finden sich Client und Server
+
+1. Der Server lauscht auf UDP-Port `5972` auf Discovery-Anfragen.
+2. Der Client sendet `CLIENT_DISCOVER` an die angegebene Broadcast-Adresse,
+   beispielsweise `192.168.2.255:5972`.
+3. Alle QuizBattle-Server im Subnetz empfangen die Anfrage. Nur der aktuelle
+   Leader antwortet.
+4. Die Antwort `LEADER_RESPONSE` enthält die Server-IP und den WebSocket-Port,
+   beispielsweise `192.168.2.176` und `5001`.
+5. Der Client baut automatisch die direkte WebSocket-Verbindung
+   `ws://192.168.2.176:5001` auf.
+
+Nach einem Leader-Ausfall führt der Client diese Suche erneut durch und
+verbindet sich mit dem neu gewählten Leader. Sein Token und die letzte
+Sequenznummer bleiben dabei erhalten.
+
+Server-IP und Broadcast-Adresse können sich nach einem Netzwerkwechsel ändern.
+Bei einem `/24`-Netz haben beide Geräte beispielsweise Adressen
+`192.168.2.x`; die zugehörige Broadcast-Adresse ist dann `192.168.2.255`.
 
 ## Spielablauf
 
@@ -140,7 +230,7 @@ abgestürzten Server unterscheiden.
 ## Einfacher Failover-Test
 
 1. Drei Server und mindestens einen Client auf verschiedenen Rechnern starten.
-2. In den Server-Logs prüfen, dass der Server mit der höchsten ID Leader ist.
+2. In den Server-Logs prüfen, dass der Server mit der größten UUID Leader ist.
 3. Den Leader während einer Runde mit `Ctrl+C` beenden.
 4. Nach ungefähr vier Sekunden wird der Ausfall erkannt und LCR erneut gestartet.
 5. Die Clients suchen den neuen Leader und setzen das replizierte Spiel fort.
@@ -152,6 +242,7 @@ abgestürzten Server unterscheiden.
 | `src/server.py` | Server-Einstieg und Argumente |
 | `src/client.py` | Client-Einstieg und Argumente |
 | `src/quizbattle/discovery.py` | UDP-Broadcast |
+| `src/quizbattle/identity.py` | Erzeugung und Speicherung der Server-UUID |
 | `src/quizbattle/control.py` | zuverlässiger gerahmter TCP-Kanal |
 | `src/quizbattle/cluster.py` | Membership, Ring, LCR und Replikation |
 | `src/quizbattle/game.py` | Quiz-, Team- und Punkte-Logik |

@@ -48,7 +48,7 @@ class QuizServer:
         self.retry_task = asyncio.create_task(self.client_retry_loop())
         logging.info(
             "Server %s: ws://%s:%s, control TCP %s, discovery UDP %s",
-            self.config.server_id,
+            self.config.server_uuid,
             self.config.host,
             self.config.ws_port,
             self.config.control_port,
