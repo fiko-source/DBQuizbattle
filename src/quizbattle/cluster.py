@@ -8,7 +8,11 @@ import time
 from .control import ReliableControlChannel
 from .discovery import BroadcastEndpoint
 from .identity import normalize_uuid, uuid_order_key
-from .settings import HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT
+from .settings import (
+    HEARTBEAT_INTERVAL,
+    HEARTBEAT_LOG_INTERVAL,
+    HEARTBEAT_TIMEOUT,
+)
 
 
 class ClusterManager:
@@ -25,6 +29,7 @@ class ClusterManager:
         self.dead_peers = set()
         self.leader_uuid = None
         self.participant = False
+        self.last_heartbeat_log = 0.0
 
         self.tasks = []
         self.election_lock = asyncio.Lock()
@@ -113,6 +118,14 @@ class ClusterManager:
         """Sende eine Servermeldung an alle Teilnehmer im lokalen Netz."""
         await self.send_discovery(self.server_message(message_type))
 
+    def should_log_heartbeat(self):
+        """Drossele normale Heartbeat-Logs, ohne das Senden zu verlangsamen."""
+        now = time.monotonic()
+        if now - self.last_heartbeat_log >= HEARTBEAT_LOG_INTERVAL:
+            self.last_heartbeat_log = now
+            return True
+        return False
+
     async def handle_discovery(self, message, address):
         """Verarbeite Clientsuche sowie Beitritt, Heartbeat und Austritt von Servern."""
         message_type = message.get("type")
@@ -166,7 +179,11 @@ class ClusterManager:
         if self.leader_uuid is None and announced_leader:
             self.leader_uuid = normalize_uuid(announced_leader)
         if message_type == "HEARTBEAT":
-            logging.info("PONG UDP Broadcast: HEARTBEAT von Server %s gesehen.", server_uuid)
+            if self.should_log_heartbeat():
+                logging.info(
+                    "PONG UDP Broadcast: HEARTBEAT von Server %s gesehen.",
+                    server_uuid,
+                )
 
         if message_type == "SERVER_JOIN":
             logging.info("SERVER_JOIN von %s empfangen.", server_uuid)
@@ -216,11 +233,13 @@ class ClusterManager:
         """Melde die eigene Erreichbarkeit und verteile regelmaessig die Ringansicht."""
         while True:
             # UDP macht neue und bestehende Server im LAN schnell sichtbar.
-            logging.info(
-                "PING UDP Broadcast: HEARTBEAT an %s:%s",
-                self.config.broadcast_ip,
-                self.config.discovery_port,
-            )
+            log_heartbeat = self.should_log_heartbeat()
+            if log_heartbeat:
+                logging.info(
+                    "PING UDP Broadcast: HEARTBEAT an %s:%s",
+                    self.config.broadcast_ip,
+                    self.config.discovery_port,
+                )
             await self.broadcast_announcement("HEARTBEAT")
             heartbeat = {
                 "type": "CONTROL_HEARTBEAT",
@@ -238,7 +257,7 @@ class ClusterManager:
             # Der zusaetzliche bestaetigte TCP-Heartbeat prueft die tatsaechliche
             # Erreichbarkeit und verteilt bekannte Mitglieder als Gossip.
             peer_ids = list(self.peers)
-            if peer_ids:
+            if log_heartbeat and peer_ids:
                 logging.info(
                     "PING TCP Control: CONTROL_HEARTBEAT an %s",
                     sorted(peer_ids),
@@ -252,7 +271,11 @@ class ClusterManager:
             )
             for server_uuid, response in zip(peer_ids, responses):
                 if isinstance(response, dict) and response.get("type") == "CONTROL_ACK":
-                    logging.info("PONG TCP Control von Server %s erhalten.", server_uuid)
+                    if log_heartbeat:
+                        logging.info(
+                            "PONG TCP Control von Server %s erhalten.",
+                            server_uuid,
+                        )
                 elif isinstance(response, Exception):
                     logging.warning(
                         "Kein PONG von Server %s: %s", server_uuid, response
@@ -320,7 +343,7 @@ class ClusterManager:
         elif message_type == "CONTROL_HEARTBEAT":
             sender = message.get("sender", {})
             sender_uuid = sender.get("server_uuid")
-            if sender_uuid:
+            if sender_uuid and self.should_log_heartbeat():
                 logging.info("PING TCP Control von Server %s empfangen.", sender_uuid)
             # Mitglieder aus fremden Ringansichten werden indirekt registriert.
             # Erst direkter Kontakt entfernt sie aus dead_peers.
