@@ -64,6 +64,17 @@ class ClusterManager:
         """Starte Netzwerkdienste, entdecke Peers und beginne die erste Wahl."""
         await self.discovery.start()
         await self.control.start()
+        logging.info(
+            "Cluster gestartet: Server %s, WebSocket %s:%s, Control TCP %s, "
+            "Discovery UDP %s, Heartbeat alle %.0fs, Timeout %.0fs",
+            self.config.server_uuid,
+            self.config.host,
+            self.config.ws_port,
+            self.config.control_port,
+            self.config.discovery_port,
+            HEARTBEAT_INTERVAL,
+            HEARTBEAT_TIMEOUT,
+        )
         self.tasks.extend(
             [
                 asyncio.create_task(self.heartbeat_loop()),
@@ -109,6 +120,11 @@ class ClusterManager:
             # Laut Architektur antwortet nur der aktuelle Leader. Ein Client
             # braucht keine Liste der Backups, sondern genau einen Einstiegspunkt.
             if self.is_leader:
+                logging.info(
+                    "Client-Discovery von %s:%s beantwortet: Ich bin der Leader.",
+                    address[0],
+                    address[1],
+                )
                 await self.send_discovery(
                     {
                         "type": "LEADER_RESPONSE",
@@ -123,6 +139,7 @@ class ClusterManager:
         if message_type == "SERVER_DISCOVER":
             # Die direkte Antwort geht an den zufaelligen Absenderport des neuen
             # Servers und enthaelt alle Daten fuer spaetere TCP-Verbindungen.
+            logging.info("SERVER_DISCOVER von %s:%s empfangen.", address[0], address[1])
             await self.send_discovery(self.server_message("SERVER_JOIN"), address)
             return
 
@@ -148,7 +165,11 @@ class ClusterManager:
         announced_leader = message.get("leader_uuid")
         if self.leader_uuid is None and announced_leader:
             self.leader_uuid = normalize_uuid(announced_leader)
+        if message_type == "HEARTBEAT":
+            logging.info("PONG UDP Broadcast: HEARTBEAT von Server %s gesehen.", server_uuid)
+
         if message_type == "SERVER_JOIN":
+            logging.info("SERVER_JOIN von %s empfangen.", server_uuid)
             await self.send_discovery(self.server_message("HEARTBEAT"), address)
         if is_new:
             logging.info("Server %s entdeckt. Ring: %s", server_uuid, self.ring())
@@ -195,6 +216,11 @@ class ClusterManager:
         """Melde die eigene Erreichbarkeit und verteile regelmaessig die Ringansicht."""
         while True:
             # UDP macht neue und bestehende Server im LAN schnell sichtbar.
+            logging.info(
+                "PING UDP Broadcast: HEARTBEAT an %s:%s",
+                self.config.broadcast_ip,
+                self.config.discovery_port,
+            )
             await self.broadcast_announcement("HEARTBEAT")
             heartbeat = {
                 "type": "CONTROL_HEARTBEAT",
@@ -211,13 +237,28 @@ class ClusterManager:
             }
             # Der zusaetzliche bestaetigte TCP-Heartbeat prueft die tatsaechliche
             # Erreichbarkeit und verteilt bekannte Mitglieder als Gossip.
-            await asyncio.gather(
+            peer_ids = list(self.peers)
+            if peer_ids:
+                logging.info(
+                    "PING TCP Control: CONTROL_HEARTBEAT an %s",
+                    sorted(peer_ids),
+                )
+            responses = await asyncio.gather(
                 *[
                     self.send_control(heartbeat, server_uuid, retries=1)
-                    for server_uuid in list(self.peers)
+                    for server_uuid in peer_ids
                 ],
                 return_exceptions=True,
             )
+            for server_uuid, response in zip(peer_ids, responses):
+                if isinstance(response, dict) and response.get("type") == "CONTROL_ACK":
+                    logging.info("PONG TCP Control von Server %s erhalten.", server_uuid)
+                elif isinstance(response, Exception):
+                    logging.warning(
+                        "Kein PONG von Server %s: %s", server_uuid, response
+                    )
+                else:
+                    logging.warning("Kein PONG von Server %s erhalten.", server_uuid)
             await asyncio.sleep(HEARTBEAT_INTERVAL)
 
     async def peer_monitor_loop(self):
@@ -277,6 +318,10 @@ class ClusterManager:
                 if is_new:
                     await self.start_election(force=True)
         elif message_type == "CONTROL_HEARTBEAT":
+            sender = message.get("sender", {})
+            sender_uuid = sender.get("server_uuid")
+            if sender_uuid:
+                logging.info("PING TCP Control von Server %s empfangen.", sender_uuid)
             # Mitglieder aus fremden Ringansichten werden indirekt registriert.
             # Erst direkter Kontakt entfernt sie aus dead_peers.
             new_peers = []
@@ -330,11 +375,21 @@ class ClusterManager:
 
         if uuid_order_key(candidate) > uuid_order_key(self.config.server_uuid):
             # Groessere UUIDs werden unveraendert weitergereicht.
+            logging.info(
+                "LCR: Kandidat %s ist groesser, leite weiter an %s.",
+                candidate,
+                self.successor(),
+            )
             self.participant = True
             forwarded = {"type": "ELECTION", "candidate": candidate}
         elif not self.participant:
             # Eine kleinere UUID wird durch die eigene ersetzt, solange dieser
             # Server in der aktuellen Wahl noch nicht teilgenommen hat.
+            logging.info(
+                "LCR: Ersetze Kandidat %s durch eigene UUID %s.",
+                candidate,
+                self.config.server_uuid,
+            )
             self.participant = True
             forwarded = {
                 "type": "ELECTION",
@@ -347,7 +402,7 @@ class ClusterManager:
     async def become_leader(self):
         """Markiere diesen Server als Leader und verteile das Wahlergebnis."""
         self.leader_uuid = self.config.server_uuid
-        logging.info("Server %s ist neuer Leader.", self.config.server_uuid)
+        logging.info("Ich bin der Leader: Server %s.", self.config.server_uuid)
         if len(self.ring()) > 1:
             await self.send_control(
                 {
@@ -365,7 +420,10 @@ class ClusterManager:
         origin = normalize_uuid(message["origin"])
         self.leader_uuid = leader_uuid
         self.participant = False
-        logging.info("LCR-Ergebnis: Server %s ist Leader.", leader_uuid)
+        if self.is_leader:
+            logging.info("LCR-Ergebnis: Ich bin der Leader.")
+        else:
+            logging.info("LCR-Ergebnis: Server %s ist der Leader.", leader_uuid)
 
         if self.config.server_uuid != origin:
             await self.send_control(message, self.successor())
@@ -413,6 +471,12 @@ class ClusterManager:
                 version,
                 sorted(missing),
             )
+        elif acknowledged:
+            logging.info(
+                "Zustand %s von allen Backups bestätigt: %s.",
+                version,
+                sorted(acknowledged),
+            )
         return acknowledged
 
     async def replicate_to_peer(self, server_uuid):
@@ -421,10 +485,23 @@ class ClusterManager:
         response = await self.send_control(
             {"type": "REPLICATE", "state": state}, server_uuid
         )
-        return bool(
+        success = bool(
             response
             and response.get("state_version") == state.get("version", 0)
         )
+        if success:
+            logging.info(
+                "Zustand %s an neuen Backup-Server %s repliziert.",
+                state.get("version", 0),
+                server_uuid,
+            )
+        else:
+            logging.warning(
+                "Zustand %s konnte nicht an Backup-Server %s repliziert werden.",
+                state.get("version", 0),
+                server_uuid,
+            )
+        return success
 
     async def synchronize_from_leader(self):
         """Fordere als Backup den vollstaendigen Zustand des Leaders an."""

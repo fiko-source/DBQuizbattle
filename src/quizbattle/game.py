@@ -10,6 +10,16 @@ from tinydb import TinyDB
 from .settings import MIN_PLAYERS, PROJECT_DIR, RESULT_TIME, ROUND_TIME
 
 
+CATEGORY_BLOCK_SIZE = 5
+DEFAULT_CATEGORIES = [
+    "Fußball",
+    "Politik",
+    "Geschichte",
+    "Erdkunde (Hauptstädte)",
+    "Allgemeinwissen",
+]
+
+
 def load_questions():
     """Lade alle Quizfragen aus der projektlokalen TinyDB-Datenbank."""
     database = TinyDB(PROJECT_DIR / "tinydb.json")
@@ -28,6 +38,11 @@ def initial_state():
         "phase": "waiting",
         "round": 0,
         "question_order": [],
+        "category_questions": {},
+        "current_category": None,
+        "category_round_count": 0,
+        "category_chooser_index": 0,
+        "category_chooser_token": None,
         "question": None,
         "deadline": 0,
         "team_round": False,
@@ -61,6 +76,59 @@ class QuizGame:
         """Erhoehe die Version nach jeder inhaltlichen Zustandsaenderung."""
         self.state["version"] = self.state.get("version", 0) + 1
 
+    def categories(self):
+        """Gib alle bekannten Kategorien in einer stabilen Reihenfolge zurueck."""
+        existing = {question.get("kategorie", "Allgemeinwissen") for question in self.questions}
+        preferred = [category for category in DEFAULT_CATEGORIES if category in existing]
+        extras = sorted(existing - set(preferred))
+        return preferred + extras
+
+    def ensure_category_questions(self):
+        """Erzeuge gemischte Frage-Pools pro Kategorie, falls sie fehlen."""
+        pools = self.state.get("category_questions") or {}
+        if pools:
+            return
+
+        pools = {category: [] for category in self.categories()}
+        for index, question in enumerate(self.questions):
+            category = question.get("kategorie", "Allgemeinwissen")
+            pools.setdefault(category, []).append(index)
+        for pool in pools.values():
+            random.shuffle(pool)
+        self.state["category_questions"] = pools
+        self.mark_changed()
+
+    def available_categories(self):
+        """Zeige Kategorien an, fuer die noch nicht gespielte Fragen existieren."""
+        self.ensure_category_questions()
+        return [
+            category
+            for category in self.categories()
+            if self.state["category_questions"].get(category)
+        ]
+
+    def ordered_player_tokens(self, connected_only=False):
+        """Sortiere Spieler stabil nach ihrer sichtbaren Spieler-ID."""
+        tokens = list(self.state["players"])
+        if connected_only:
+            connected = self.connected_tokens()
+            tokens = [token for token in tokens if token in connected]
+        return sorted(
+            tokens,
+            key=lambda token: self.state["players"][token]["player_id"],
+        )
+
+    def category_chooser(self):
+        """Bestimme den Spieler, der die naechste Kategorie auswaehlen darf."""
+        tokens = self.ordered_player_tokens(connected_only=True)
+        if not tokens:
+            tokens = self.ordered_player_tokens()
+        if not tokens:
+            return None
+
+        chooser_index = self.state.get("category_chooser_index", 0) % len(tokens)
+        return tokens[chooser_index]
+
     async def add_or_resume_player(self, requested_token, name):
         """Setze eine bekannte Sitzung fort oder registriere einen neuen Spieler."""
         # Ein Token bleibt beim Client ueber Reconnects erhalten. Dadurch bekommt
@@ -87,6 +155,9 @@ class QuizGame:
         # Wiederholungen nach Paket- oder Verbindungsverlust idempotent.
         if request_id and request_id in processed:
             return processed[request_id]
+
+        if message.get("type") == "CATEGORY_CHOICE":
+            return await self.handle_category_choice(token, message)
 
         if self.state["phase"] != "question":
             status = "Aktuell läuft keine Frage."
@@ -153,6 +224,44 @@ class QuizGame:
 
         return None
 
+    async def handle_category_choice(self, token, message):
+        """Pruefe die Kategorieauswahl und starte den naechsten Fragenblock."""
+        request_id = message.get("request_id")
+        if self.state["phase"] != "category_select":
+            status = "Aktuell steht keine Kategorieauswahl an."
+            await self.remember_request(request_id, status)
+            return status
+
+        if token != self.state.get("category_chooser_token"):
+            status = "Du bist aktuell nicht mit der Kategorieauswahl dran."
+            await self.remember_request(request_id, status)
+            return status
+
+        category = str(message.get("category", "")).strip()
+        if category not in self.available_categories():
+            status = "Diese Kategorie ist nicht verfügbar."
+            await self.remember_request(request_id, status)
+            return status
+
+        self.state["current_category"] = category
+        self.state["category_round_count"] = 0
+        self.state["category_chooser_token"] = None
+        self.state["category_chooser_index"] = (
+            self.state.get("category_chooser_index", 0) + 1
+        )
+        self.mark_changed()
+        status = f"Kategorie gewählt: {category}"
+        await self.remember_request(request_id, status, replicate=False)
+        chooser = self.state["players"][token]
+        await self.emit_event(
+            "CATEGORY_SELECTED",
+            category=category,
+            chooser=chooser["name"],
+            chooser_id=chooser["player_id"],
+        )
+        await self.start_next_round()
+        return status
+
     async def remember_request(self, request_id, status, replicate=True):
         """Merke das Ergebnis einer Aktion fuer deduplizierte Wiederholungen."""
         if not request_id:
@@ -177,17 +286,12 @@ class QuizGame:
         while is_leader():
             phase = self.state["phase"]
             if phase == "waiting":
-                # Die Fragefolge wird einmal gemischt und als Teil des Zustands
-                # repliziert, damit ein neuer Leader dieselbe Reihenfolge fortsetzt.
                 if len(self.connected_tokens()) >= MIN_PLAYERS:
-                    if not self.state["question_order"]:
-                        order = list(range(len(self.questions)))
-                        random.shuffle(order)
-                        self.state["question_order"] = order
-                        self.mark_changed()
-                    await self.start_next_round()
+                    await self.start_category_selection()
                 else:
                     await asyncio.sleep(0.5)
+            elif phase == "category_select":
+                await asyncio.sleep(0.5)
             elif phase == "question":
                 # Gespeicherte absolute Deadlines bleiben auch nach einer
                 # Uebernahme durch einen neuen Leader sinnvoll.
@@ -198,14 +302,52 @@ class QuizGame:
                 await asyncio.sleep(max(0, self.state["deadline"] - time.time()))
                 if is_leader() and self.state["phase"] == "result":
                     await self.start_next_round()
+            elif phase == "game_over":
+                # Nach einem beendeten Spiel soll der Server nicht dauerhaft im
+                # Endzustand bleiben. Die Sequenznummer und Ereignishistorie
+                # bleiben erhalten, damit verbundene Clients weiterhin geordnete
+                # Events bekommen und ihre ACK/Resend-Logik nicht neu starten muss.
+                await asyncio.sleep(RESULT_TIME)
+                if is_leader() and self.state["phase"] == "game_over":
+                    await self.reset_for_new_game()
             else:
                 await asyncio.sleep(1)
 
-    async def start_next_round(self):
-        """Beende gegebenenfalls das Spiel oder veroeffentliche die naechste Frage."""
-        round_number = self.state["round"] + 1
-        order = self.state["question_order"]
-        if round_number > len(order):
+    async def reset_for_new_game(self):
+        """Setze Runden- und Punktestand fuer ein neues Spiel zurueck."""
+        self.state.update(
+            {
+                "phase": "waiting",
+                "round": 0,
+                "question_order": [],
+                "category_questions": {},
+                "current_category": None,
+                "category_round_count": 0,
+                "category_chooser_token": None,
+                "question": None,
+                "deadline": 0,
+                "team_round": False,
+                "teams": {},
+                "answers": {},
+                "team_answers": {},
+                "scores": {token: 0 for token in self.state["players"]},
+                "processed_requests": {},
+            }
+        )
+        self.mark_changed()
+        await self.emit_event(
+            "GAME_RESET",
+            scores={
+                self.state["players"][token]["player_id"]: score
+                for token, score in self.state["scores"].items()
+            },
+            message="Neues Spiel startet.",
+        )
+
+    async def start_category_selection(self):
+        """Fordere den naechsten Spieler zur Kategorieauswahl auf."""
+        categories = self.available_categories()
+        if not categories:
             self.state["phase"] = "game_over"
             self.mark_changed()
             await self.emit_event(
@@ -215,13 +357,64 @@ class QuizGame:
             )
             return
 
-        question = self.questions[order[round_number - 1]]
+        chooser_token = self.category_chooser()
+        if not chooser_token:
+            await asyncio.sleep(0.5)
+            return
+
+        self.state["phase"] = "category_select"
+        self.state["category_chooser_token"] = chooser_token
+        self.state["current_category"] = None
+        self.state["category_round_count"] = 0
+        self.state["question"] = None
+        self.state["deadline"] = 0
+        self.state["team_round"] = False
+        self.state["teams"] = {}
+        self.state["answers"] = {}
+        self.state["team_answers"] = {}
+        self.mark_changed()
+        chooser = self.state["players"][chooser_token]
+        await self.emit_event(
+            "CATEGORY_SELECTION",
+            categories=categories,
+            chooser_id=chooser["player_id"],
+            chooser_name=chooser["name"],
+            block_size=CATEGORY_BLOCK_SIZE,
+        )
+
+    def next_question_index(self):
+        """Nimm die naechste Frage aus dem aktuell gewaehlten Kategorie-Pool."""
+        category = self.state.get("current_category")
+        if not category:
+            return None
+        pool = self.state["category_questions"].get(category, [])
+        if not pool:
+            return None
+        return pool.pop(0)
+
+    async def start_next_round(self):
+        """Beende gegebenenfalls das Spiel oder veroeffentliche die naechste Frage."""
+        if (
+            not self.state.get("current_category")
+            or self.state.get("category_round_count", 0) >= CATEGORY_BLOCK_SIZE
+        ):
+            await self.start_category_selection()
+            return
+
+        round_number = self.state["round"] + 1
+        question_index = self.next_question_index()
+        if question_index is None:
+            await self.start_category_selection()
+            return
+
+        question = self.questions[question_index]
         # Jede dritte Runde ist eine Teamrunde.
         team_round = round_number % 3 == 0
         self.state.update(
             {
                 "phase": "question",
                 "round": round_number,
+                "category_round_count": self.state.get("category_round_count", 0) + 1,
                 "question": question,
                 "deadline": time.time() + ROUND_TIME,
                 "team_round": team_round,
@@ -240,6 +433,9 @@ class QuizGame:
             "QUESTION",
             round=round_number,
             question=question["frage"],
+            category=question.get("kategorie", self.state["current_category"]),
+            category_round=self.state["category_round_count"],
+            category_block_size=CATEGORY_BLOCK_SIZE,
             duration=ROUND_TIME,
             deadline=self.state["deadline"],
             team_round=team_round,

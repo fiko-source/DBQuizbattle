@@ -53,7 +53,12 @@ class NetworkClient:
             # Benutzeraktionen erhalten eine UUID. Bleibt eine Bestaetigung aus,
             # kann exakt dieselbe Aktion erneut gesendet werden, ohne sie auf
             # dem Server doppelt anzuwenden.
-            if message.get("type") in {"ANSWER", "TEAM_ANSWER", "TEAM_CHAT"}:
+            if message.get("type") in {
+                "ANSWER",
+                "TEAM_ANSWER",
+                "TEAM_CHAT",
+                "CATEGORY_CHOICE",
+            }:
                 request_id = message.setdefault("request_id", uuid.uuid4().hex)
                 self.pending_actions[request_id] = message
             asyncio.run_coroutine_threadsafe(self.outbox.put(message), self.loop)

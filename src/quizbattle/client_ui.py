@@ -33,6 +33,7 @@ class QuizWindow(QWidget):
         self.team_round = False
         self.team_name = None
         self.deadline = 0
+        self.category_buttons = []
 
         # Qt-Signale verhindern, dass der Netzwerkthread GUI-Elemente direkt
         # veraendert. Direkte Zugriffe aus fremden Threads waeren unsicher.
@@ -67,6 +68,9 @@ class QuizWindow(QWidget):
         self.answer_input.returnPressed.connect(self.send_answer)
         self.answer_button = QPushButton("Antwort senden")
         self.answer_button.clicked.connect(self.send_answer)
+        self.category_label = QLabel("")
+        self.category_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.category_layout = QHBoxLayout()
 
         self.team_label = QLabel("Einzelrunde")
         self.chat_view = QTextEdit()
@@ -81,6 +85,8 @@ class QuizWindow(QWidget):
         layout = QVBoxLayout()
         layout.addLayout(top)
         layout.addWidget(self.question_label)
+        layout.addWidget(self.category_label)
+        layout.addLayout(self.category_layout)
         layout.addWidget(self.answer_input)
         layout.addWidget(self.answer_button)
         layout.addWidget(self.team_label)
@@ -94,6 +100,7 @@ class QuizWindow(QWidget):
         self.timer.timeout.connect(self.update_timer)
         self.timer.start(250)
         self.set_inputs(False)
+        self.clear_category_buttons()
 
     def set_status(self, text):
         """Zeige eine kurze Statusmeldung am unteren Fensterrand."""
@@ -134,6 +141,12 @@ class QuizWindow(QWidget):
             self.network.send({"type": "TEAM_CHAT", "message": text})
             self.chat_input.clear()
 
+    def send_category_choice(self, category):
+        """Sende die ausgewaehlte Kategorie an den Leader."""
+        self.network.send({"type": "CATEGORY_CHOICE", "category": category})
+        self.set_category_buttons_enabled(False)
+        self.set_status(f"Kategorie gewählt: {category}")
+
     def handle_message(self, message):
         """Ordne jede empfangene Nachrichtenart der passenden Anzeigeaktion zu."""
         message_type = message.get("type")
@@ -150,6 +163,10 @@ class QuizWindow(QWidget):
             self.set_status(text)
         elif message_type == "QUESTION":
             self.show_question(message)
+        elif message_type == "CATEGORY_SELECTION":
+            self.show_category_selection(message)
+        elif message_type == "CATEGORY_SELECTED":
+            self.show_category_selected(message)
         elif message_type == "ANSWER_PHASE_START":
             self.deadline = message["deadline"]
             self.set_inputs(True)
@@ -168,15 +185,19 @@ class QuizWindow(QWidget):
                 )
         elif message_type == "RESULT":
             self.show_result(message)
+        elif message_type == "GAME_RESET":
+            self.show_game_reset(message)
         elif message_type == "GAME_OVER":
             self.show_game_over(message)
 
     def show_question(self, message):
         """Zeige eine neue Frage und ermittle eine moegliche Teamzuordnung."""
+        self.clear_category_buttons()
         self.team_round = False
         self.deadline = message["deadline"]
         self.question_label.setText(
-            f"Runde {message['round']}\n\n{message['question']}"
+            f"Runde {message['round']} - {message.get('category', '')}\n\n"
+            f"{message['question']}"
         )
         self.chat_view.clear()
         self.team_name = None
@@ -195,6 +216,60 @@ class QuizWindow(QWidget):
         if not self.team_round:
             self.team_label.setText("Einzelrunde")
         self.set_inputs(False)
+
+    def show_category_selection(self, message):
+        """Zeige Kategorieauswahl und aktiviere sie nur fuer den gewaehlten Spieler."""
+        self.deadline = 0
+        self.set_inputs(False)
+        self.answer_input.clear()
+        chooser_id = message["chooser_id"]
+        chooser_name = message["chooser_name"]
+        block_size = message.get("block_size", 5)
+        self.question_label.setText(
+            f"Nächste Kategorie wählen\n\n"
+            f"{chooser_name} ist dran. Danach kommen {block_size} Fragen."
+        )
+        self.category_label.setText("Kategorieauswahl")
+        can_choose = chooser_id == self.player_id
+        self.build_category_buttons(message["categories"], can_choose)
+        if can_choose:
+            self.set_status("Du bist dran: Wähle eine Kategorie.")
+        else:
+            self.set_status(f"Warte auf Kategorieauswahl von {chooser_name}.")
+
+    def show_category_selected(self, message):
+        """Zeige die vom Spieler gewaehlte Kategorie."""
+        self.clear_category_buttons()
+        self.set_status(
+            f"{message['chooser']} hat {message['category']} gewählt."
+        )
+
+    def build_category_buttons(self, categories, enabled):
+        """Erzeuge die Buttons fuer die aktuelle Kategorieauswahl neu."""
+        self.clear_category_buttons()
+        for category in categories:
+            button = QPushButton(category)
+            button.clicked.connect(
+                lambda checked=False, selected=category: self.send_category_choice(
+                    selected
+                )
+            )
+            button.setEnabled(enabled)
+            self.category_layout.addWidget(button)
+            self.category_buttons.append(button)
+
+    def set_category_buttons_enabled(self, enabled):
+        """Aktiviere oder deaktiviere alle sichtbaren Kategoriebuttons."""
+        for button in self.category_buttons:
+            button.setEnabled(enabled)
+
+    def clear_category_buttons(self):
+        """Entferne alle Kategoriebuttons aus der Oberflaeche."""
+        self.category_label.setText("")
+        while self.category_buttons:
+            button = self.category_buttons.pop()
+            self.category_layout.removeWidget(button)
+            button.deleteLater()
 
     def show_result(self, message):
         """Zeige Auswertung, richtige Antwort und aktuellen Punktestand."""
@@ -222,4 +297,17 @@ class QuizWindow(QWidget):
             for index, (name, score) in enumerate(ranking, 1)
         )
         self.question_label.setText(f"Spiel beendet\n\n{text}")
+        self.set_inputs(False)
+
+    def show_game_reset(self, message):
+        """Bereite die Anzeige nach einem abgeschlossenen Spiel neu vor."""
+        self.deadline = 0
+        self.team_round = False
+        self.team_name = None
+        self.clear_category_buttons()
+        self.score_label.setText("Punkte: 0")
+        self.team_label.setText("Einzelrunde")
+        self.chat_view.clear()
+        self.question_label.setText("Warte auf Spielstart...")
+        self.set_status(message.get("message", "Neues Spiel startet."))
         self.set_inputs(False)

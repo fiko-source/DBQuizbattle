@@ -66,12 +66,90 @@ class GameTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_round_phases_are_explicit_events(self):
         """Ein Rundenstart erzeugt die erwarteten getrennten Phasenereignisse."""
-        self.game.state["question_order"] = [0]
+        self.game.state["current_category"] = "Fußball"
+        self.game.state["category_questions"] = {"Fußball": [0]}
         await self.game.start_next_round()
         self.assertEqual(
             [event["type"] for event in self.events],
             ["ROUND_START", "QUESTION", "ANSWER_PHASE_START"],
         )
+        self.assertEqual(self.events[1]["category"], "Fußball")
+
+    async def test_category_selection_names_current_chooser(self):
+        """Die Kategorieauswahl nennt den Spieler, der auswaehlen darf."""
+        await self.game.start_category_selection()
+        self.assertEqual(self.game.state["phase"], "category_select")
+        self.assertEqual(self.game.state["category_chooser_token"], "token")
+        self.assertEqual(self.events[-1]["type"], "CATEGORY_SELECTION")
+        self.assertIn("Allgemeinwissen", self.events[-1]["categories"])
+        self.assertEqual(self.events[-1]["chooser_id"], "P1")
+
+    async def test_only_current_chooser_can_select_category(self):
+        """Nur der ausgewaehlte Spieler darf die naechste Kategorie setzen."""
+        self.game.state["players"]["other"] = {
+            "name": "Musab",
+            "player_id": "P2",
+        }
+        self.game.state["scores"]["other"] = 0
+        self.game.state["phase"] = "category_select"
+        self.game.state["category_chooser_token"] = "token"
+        status = await self.game.handle_action(
+            "other",
+            {
+                "type": "CATEGORY_CHOICE",
+                "category": "Allgemeinwissen",
+                "request_id": "choice-1",
+            },
+        )
+        self.assertEqual(
+            status,
+            "Du bist aktuell nicht mit der Kategorieauswahl dran.",
+        )
+        self.assertIsNone(self.game.state["current_category"])
+
+    async def test_category_choice_starts_question_block(self):
+        """Eine gueltige Kategorieauswahl startet die naechste Frage."""
+        self.game.state["phase"] = "category_select"
+        self.game.state["category_chooser_token"] = "token"
+        status = await self.game.handle_action(
+            "token",
+            {
+                "type": "CATEGORY_CHOICE",
+                "category": "Allgemeinwissen",
+                "request_id": "choice-2",
+            },
+        )
+        self.assertEqual(status, "Kategorie gewählt: Allgemeinwissen")
+        self.assertEqual(self.game.state["phase"], "question")
+        self.assertEqual(self.game.state["current_category"], "Allgemeinwissen")
+        self.assertEqual(self.game.state["category_round_count"], 1)
+        self.assertIn("CATEGORY_SELECTED", [event["type"] for event in self.events])
+
+    async def test_game_reset_starts_fresh_game_but_keeps_player(self):
+        """Nach GAME_OVER startet ein neues Spiel mit bekannten Spielern neu."""
+        self.game.state.update(
+            {
+                "phase": "game_over",
+                "round": 5,
+                "question_order": [0],
+                "scores": {"token": 3},
+                "answers": {"token": "old"},
+                "processed_requests": {"request-1": "Antwort gespeichert."},
+                "sequence": 9,
+                "events": [{"type": "GAME_OVER", "seq": 9}],
+            }
+        )
+
+        await self.game.reset_for_new_game()
+
+        self.assertEqual(self.game.state["phase"], "waiting")
+        self.assertEqual(self.game.state["round"], 0)
+        self.assertEqual(self.game.state["scores"], {"token": 0})
+        self.assertEqual(self.game.state["answers"], {})
+        self.assertEqual(self.game.state["processed_requests"], {})
+        self.assertIn("token", self.game.state["players"])
+        self.assertEqual(self.events[-1]["type"], "GAME_RESET")
+        self.assertEqual(self.events[-1]["scores"], {"P1": 0})
 
 
 if __name__ == "__main__":

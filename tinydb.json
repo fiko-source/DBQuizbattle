@@ -1,44 +1,254 @@
 {
   "_default": {
     "1": {
+      "kategorie": "Fußball",
       "frage": "Wie viele Spieler stehen beim Fußball pro Team auf dem Feld?",
       "antwort": "11"
     },
     "2": {
-      "frage": "In welcher Sportart wird ein Slam Dunk gemacht?",
-      "antwort": "Basketball"
-    },
-    "3": {
-      "frage": "Wie lang ist ein Marathon ungefähr in Kilometern?",
-      "antwort": "42,195"
-    },
-    "4": {
+      "kategorie": "Fußball",
       "frage": "Welche Farbe hat die Karte für einen Platzverweis im Fußball?",
       "antwort": "Rot"
     },
+    "3": {
+      "kategorie": "Fußball",
+      "frage": "Wie heißt der Weltfußballverband?",
+      "antwort": "FIFA"
+    },
+    "4": {
+      "kategorie": "Fußball",
+      "frage": "Wie lange dauert ein Fußballspiel ohne Nachspielzeit?",
+      "antwort": "90 Minuten"
+    },
     "5": {
-      "frage": "Wie nennt man den Schläger beim Tennis?",
-      "antwort": "Tennisschläger"
+      "kategorie": "Fußball",
+      "frage": "Wie nennt man drei Tore eines Spielers in einem Spiel?",
+      "antwort": "Hattrick"
     },
     "6": {
-      "frage": "Welche Sportart nutzt einen Puck?",
-      "antwort": "Eishockey"
+      "kategorie": "Fußball",
+      "frage": "Welches Land gewann die Fußball-WM 2014?",
+      "antwort": "Deutschland"
     },
     "7": {
-      "frage": "Wie viele Ringe hat das olympische Symbol?",
-      "antwort": "5"
+      "kategorie": "Fußball",
+      "frage": "Wie heißt der Torwartbereich direkt vor dem Tor?",
+      "antwort": "Fünfmeterraum"
     },
     "8": {
-      "frage": "In welcher Sportart gibt es einen Home Run?",
-      "antwort": "Baseball"
+      "kategorie": "Fußball",
+      "frage": "Wie viele Punkte gibt es in der Liga für einen Sieg?",
+      "antwort": "3"
     },
     "9": {
-      "frage": "Wie nennt man das Ziel beim Handball?",
-      "antwort": "Tor"
+      "kategorie": "Fußball",
+      "frage": "Wie nennt man den Schiedsrichterassistenten an der Seitenlinie umgangssprachlich?",
+      "antwort": "Linienrichter"
     },
     "10": {
-      "frage": "Welche Sportart ist für den Begriff 'Birdie' bekannt?",
-      "antwort": "Golf"
+      "kategorie": "Fußball",
+      "frage": "Welcher Verein spielt im Camp Nou?",
+      "antwort": "FC Barcelona"
+    },
+    "11": {
+      "kategorie": "Politik",
+      "frage": "Wie heißt das deutsche Parlament?",
+      "antwort": "Bundestag"
+    },
+    "12": {
+      "kategorie": "Politik",
+      "frage": "Wie heißt die deutsche Verfassung?",
+      "antwort": "Grundgesetz"
+    },
+    "13": {
+      "kategorie": "Politik",
+      "frage": "Wie viele Bundesländer hat Deutschland?",
+      "antwort": "16"
+    },
+    "14": {
+      "kategorie": "Politik",
+      "frage": "Wie heißt das Parlament der Europäischen Union?",
+      "antwort": "Europäisches Parlament"
+    },
+    "15": {
+      "kategorie": "Politik",
+      "frage": "Welche Staatsform hat Deutschland?",
+      "antwort": "Republik"
+    },
+    "16": {
+      "kategorie": "Politik",
+      "frage": "Wer wählt den deutschen Bundeskanzler?",
+      "antwort": "Bundestag"
+    },
+    "17": {
+      "kategorie": "Politik",
+      "frage": "Wie heißt das Amt des deutschen Staatsoberhaupts?",
+      "antwort": "Bundespräsident"
+    },
+    "18": {
+      "kategorie": "Politik",
+      "frage": "Welche Organisation hat die Abkürzung UNO?",
+      "antwort": "Vereinte Nationen"
+    },
+    "19": {
+      "kategorie": "Politik",
+      "frage": "Wie nennt man eine Abstimmung des Volkes über eine Sachfrage?",
+      "antwort": "Referendum"
+    },
+    "20": {
+      "kategorie": "Politik",
+      "frage": "Wie heißt die zweite Kammer der deutschen Gesetzgebung neben dem Bundestag?",
+      "antwort": "Bundesrat"
+    },
+    "21": {
+      "kategorie": "Geschichte",
+      "frage": "In welchem Jahr fiel die Berliner Mauer?",
+      "antwort": "1989"
+    },
+    "22": {
+      "kategorie": "Geschichte",
+      "frage": "In welchem Jahr begann der Zweite Weltkrieg?",
+      "antwort": "1939"
+    },
+    "23": {
+      "kategorie": "Geschichte",
+      "frage": "Wie hieß der erste Bundeskanzler der Bundesrepublik Deutschland?",
+      "antwort": "Konrad Adenauer"
+    },
+    "24": {
+      "kategorie": "Geschichte",
+      "frage": "Welches antike Volk baute das Kolosseum?",
+      "antwort": "Römer"
+    },
+    "25": {
+      "kategorie": "Geschichte",
+      "frage": "Wer entdeckte 1492 Amerika aus europäischer Sicht?",
+      "antwort": "Christoph Kolumbus"
+    },
+    "26": {
+      "kategorie": "Geschichte",
+      "frage": "Wie hieß die Epoche nach dem Mittelalter, die Wiedergeburt antiker Kunst und Wissenschaft bedeutet?",
+      "antwort": "Renaissance"
+    },
+    "27": {
+      "kategorie": "Geschichte",
+      "frage": "In welchem Land begann die Industrielle Revolution?",
+      "antwort": "England"
+    },
+    "28": {
+      "kategorie": "Geschichte",
+      "frage": "Wie hieß die Grenze zwischen Ost- und Westblock im Kalten Krieg bildlich?",
+      "antwort": "Eiserner Vorhang"
+    },
+    "29": {
+      "kategorie": "Geschichte",
+      "frage": "Welches Reich wurde von Pharaonen regiert?",
+      "antwort": "Ägypten"
+    },
+    "30": {
+      "kategorie": "Geschichte",
+      "frage": "In welchem Jahr wurde die Bundesrepublik Deutschland gegründet?",
+      "antwort": "1949"
+    },
+    "31": {
+      "kategorie": "Erdkunde (Hauptstädte)",
+      "frage": "Wie heißt die Hauptstadt von Frankreich?",
+      "antwort": "Paris"
+    },
+    "32": {
+      "kategorie": "Erdkunde (Hauptstädte)",
+      "frage": "Wie heißt die Hauptstadt von Italien?",
+      "antwort": "Rom"
+    },
+    "33": {
+      "kategorie": "Erdkunde (Hauptstädte)",
+      "frage": "Wie heißt die Hauptstadt von Spanien?",
+      "antwort": "Madrid"
+    },
+    "34": {
+      "kategorie": "Erdkunde (Hauptstädte)",
+      "frage": "Wie heißt die Hauptstadt von Österreich?",
+      "antwort": "Wien"
+    },
+    "35": {
+      "kategorie": "Erdkunde (Hauptstädte)",
+      "frage": "Wie heißt die Hauptstadt der Schweiz?",
+      "antwort": "Bern"
+    },
+    "36": {
+      "kategorie": "Erdkunde (Hauptstädte)",
+      "frage": "Wie heißt die Hauptstadt von Portugal?",
+      "antwort": "Lissabon"
+    },
+    "37": {
+      "kategorie": "Erdkunde (Hauptstädte)",
+      "frage": "Wie heißt die Hauptstadt von Polen?",
+      "antwort": "Warschau"
+    },
+    "38": {
+      "kategorie": "Erdkunde (Hauptstädte)",
+      "frage": "Wie heißt die Hauptstadt von Schweden?",
+      "antwort": "Stockholm"
+    },
+    "39": {
+      "kategorie": "Erdkunde (Hauptstädte)",
+      "frage": "Wie heißt die Hauptstadt von Norwegen?",
+      "antwort": "Oslo"
+    },
+    "40": {
+      "kategorie": "Erdkunde (Hauptstädte)",
+      "frage": "Wie heißt die Hauptstadt von Griechenland?",
+      "antwort": "Athen"
+    },
+    "41": {
+      "kategorie": "Allgemeinwissen",
+      "frage": "Wie viele Planeten hat unser Sonnensystem?",
+      "antwort": "8"
+    },
+    "42": {
+      "kategorie": "Allgemeinwissen",
+      "frage": "Welches chemische Symbol hat Wasser?",
+      "antwort": "H2O"
+    },
+    "43": {
+      "kategorie": "Allgemeinwissen",
+      "frage": "Wie viele Kontinente gibt es?",
+      "antwort": "7"
+    },
+    "44": {
+      "kategorie": "Allgemeinwissen",
+      "frage": "Welches Tier ist das größte lebende Säugetier?",
+      "antwort": "Blauwal"
+    },
+    "45": {
+      "kategorie": "Allgemeinwissen",
+      "frage": "Wie heißt die kleinste Primzahl?",
+      "antwort": "2"
+    },
+    "46": {
+      "kategorie": "Allgemeinwissen",
+      "frage": "Aus welcher Sprache stammt das Wort Computer ursprünglich?",
+      "antwort": "Latein"
+    },
+    "47": {
+      "kategorie": "Allgemeinwissen",
+      "frage": "Wie viele Minuten hat eine Stunde?",
+      "antwort": "60"
+    },
+    "48": {
+      "kategorie": "Allgemeinwissen",
+      "frage": "Welches Organ pumpt Blut durch den Körper?",
+      "antwort": "Herz"
+    },
+    "49": {
+      "kategorie": "Allgemeinwissen",
+      "frage": "Wie heißt der längste Fluss der Welt?",
+      "antwort": "Nil"
+    },
+    "50": {
+      "kategorie": "Allgemeinwissen",
+      "frage": "Welche Farbe entsteht aus Blau und Gelb?",
+      "antwort": "Grün"
     }
   }
 }
