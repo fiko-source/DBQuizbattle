@@ -1,4 +1,9 @@
-"""Verknuepfung von WebSocket-Clients, Spiellogik und Servercluster."""
+"""Verknuepfung von WebSocket-Clients, Spiellogik und Servercluster.
+
+Diese Datei ist die Bruecke zwischen den Spielern und dem verteilten
+Servercluster. Sie nimmt WebSocket-Clients an, erzeugt geordnete Events und
+delegiert Replikation an den Cluster.
+"""
 
 import asyncio
 import json
@@ -13,13 +18,27 @@ from .settings import CLIENT_RETRY_INTERVAL, MIN_PLAYERS
 
 
 class QuizServer:
-    """Betreibe den aktiven Spielserver und seine Clientverbindungen."""
+    """Betreibe den aktiven Spielserver und seine Clientverbindungen.
+
+    Ein QuizServer kann Leader oder Backup sein. Nur als Leader akzeptiert er
+    aktive Client-Sitzungen und erzeugt neue Spielereignisse.
+    """
 
     def __init__(self, config):
-        """Erzeuge Spiel und Cluster mit gemeinsamen Callback-Funktionen."""
+        """Erzeuge Spiel und Cluster mit gemeinsamen Callback-Funktionen.
+
+        Die Callbacks verbinden die Schichten: QuizGame kennt keine WebSockets,
+        ClusterManager kennt keine Spielregeln, und QuizServer fuehrt beides
+        zusammen.
+        """
         self.config = config
+        # token -> WebSocket. Der Token identifiziert eine Spielersitzung auch
+        # ueber Reconnects hinweg.
         self.connections = {}
+        # token -> letzte vom Client bestaetigte Sequenznummer.
         self.client_acks = {}
+        # token -> Zeitpunkt des letzten Sendens. Wird fuer erneutes Senden
+        # nicht bestaetigter Events benutzt.
         self.client_last_send = {}
         self.game_task = None
         self.retry_task = None
@@ -71,7 +90,11 @@ class QuizServer:
         return await self.cluster.replicate_state()
 
     async def emit_event(self, event_type, **data):
-        """Erzeuge ein geordnetes Spielereignis, repliziere und verteile es."""
+        """Erzeuge ein geordnetes Spielereignis, repliziere und verteile es.
+
+        Diese Methode macht den Leader zum Sequencer: Jedes relevante
+        Spielereignis bekommt genau hier eine globale Sequenznummer.
+        """
         # Der Leader ist der Sequencer: Nur hier wird die globale Nummer erhoeht.
         self.game.state["sequence"] += 1
         self.game.mark_changed()
@@ -83,7 +106,8 @@ class QuizServer:
         }
         self.game.state["events"].append(event)
 
-        # Primary-backup: backups confirm the event before clients see it.
+        # Primary-backup: Backups bestaetigen den neuen Zustand, bevor Clients
+        # das Event sehen. Dadurch ist ein Ersatzleader moeglichst aktuell.
         await self.replicate_state()
         await self.broadcast_clients(event)
         return event
@@ -102,7 +126,12 @@ class QuizServer:
             self.remove_connection(token)
 
     async def client_retry_loop(self):
-        """Wiederhole das naechste unbestaetigte Ereignis fuer jeden Client."""
+        """Wiederhole das naechste unbestaetigte Ereignis fuer jeden Client.
+
+        Wenn ein Client kein ACK fuer ein Event sendet, kann es sein, dass das
+        Event verloren ging oder die Verbindung gerade schwach war. Der Server
+        sendet deshalb das naechste fehlende Event erneut.
+        """
         while True:
             await asyncio.sleep(0.5)
             now = time.monotonic()
@@ -139,7 +168,12 @@ class QuizServer:
                 await websocket.send(json.dumps(event, ensure_ascii=False))
 
     async def handle_client(self, websocket):
-        """Registriere einen Client und bearbeite seine WebSocket-Sitzung."""
+        """Registriere einen Client und bearbeite seine WebSocket-Sitzung.
+
+        Der erste Client-Frame muss JOIN sein. Darin stehen Name, optionaler
+        Token und last_seq. Diese Informationen machen Reconnect nach
+        Leaderwechsel moeglich.
+        """
         if not self.cluster.is_leader:
             # Backups akzeptieren keine Spielsitzungen. Der Client startet nach
             # NOT_LEADER automatisch eine neue Discovery.
@@ -186,6 +220,7 @@ class QuizServer:
             )
             # Vor neuen Live-Ereignissen erhaelt der Client alles, was ihm seit
             # seiner letzten bestaetigten Sequenznummer fehlt.
+            # So kann ein Client nach Reconnect ohne Neustart wieder einsteigen.
             await self.send_event_range(websocket, last_seq + 1)
             await self.emit_event(
                 "PLAYER_COUNT",
@@ -206,14 +241,23 @@ class QuizServer:
                 self.remove_connection(token)
 
     async def handle_client_message(self, token, websocket, message):
-        """Verarbeite ACKs, Nachforderungen und Aktionen eines Clients."""
+        """Verarbeite ACKs, Nachforderungen und Aktionen eines Clients.
+
+        Es gibt drei Arten von Clientnachrichten: ACKs fuer schon verarbeitete
+        Events, RESEND_REQUEST fuer erkannte Luecken und echte Spielaktionen wie
+        ANSWER oder CATEGORY_CHOICE.
+        """
         message_type = message.get("type")
         if message_type == "ACK":
+            # ACK n bedeutet: Der Client hat alle Events bis einschliesslich n
+            # geordnet verarbeitet. Kleinere alte ACKs werden ignoriert.
             self.client_acks[token] = max(
                 int(message.get("seq", 0)), self.client_acks.get(token, 0)
             )
             return
         if message_type == "RESEND_REQUEST":
+            # Der Client hat eine Sequenzluecke erkannt und fordert genau den
+            # fehlenden Bereich erneut an.
             await self.send_event_range(
                 websocket,
                 int(message.get("from_seq", 1)),

@@ -1,4 +1,9 @@
-"""Servercluster mit Discovery, Heartbeats, LCR-Wahl und Replikation."""
+"""Servercluster mit Discovery, Heartbeats, LCR-Wahl und Replikation.
+
+Diese Datei ist der Kern der verteilten Serverlogik. Sie verwaltet, welche
+Server bekannt sind, wer Leader ist, wie Serverausfaelle erkannt werden und wie
+der Spielzustand an Backups verteilt wird.
+"""
 
 import asyncio
 import copy
@@ -16,22 +21,42 @@ from .settings import (
 
 
 class ClusterManager:
-    """Verwalte bekannte Server und den replizierten Primary-Backup-Verbund."""
+    """Verwalte bekannte Server und den replizierten Primary-Backup-Verbund.
+
+    Primary-Backup bedeutet: Der Leader ist der Primary und fuehrt das Spiel
+    aktiv aus. Alle anderen Server sind Backups und halten eine Kopie des
+    Zustands, damit sie bei einem Leaderausfall uebernehmen koennen.
+    """
 
     def __init__(self, config, get_state, set_state, became_leader):
-        """Baue Discovery und Kontrollkanal um die Serverkonfiguration auf."""
+        """Baue Discovery und Kontrollkanal um die Serverkonfiguration auf.
+
+        get_state, set_state und became_leader sind Callbacks in die
+        Anwendungsschicht. Dadurch kennt der ClusterManager den Spielzustand
+        nicht im Detail, kann ihn aber replizieren oder ersetzen.
+        """
         self.config = config
         self.get_state = get_state
         self.set_state = set_state
         self.became_leader = became_leader
 
+        # Peers sind alle anderen bekannten Server. Der eigene Server steht
+        # nicht in peers, wird aber in ring() immer dazugenommen.
         self.peers = {}
+        # dead_peers verhindert, dass alte indirekte Gossip-Informationen einen
+        # gerade ausgefallenen Server sofort wieder in den Ring aufnehmen.
         self.dead_peers = set()
+        # leader_uuid ist die aktuell bekannte Fuehrungsrolle. Wenn sie der
+        # eigenen UUID entspricht, ist dieser Prozess Leader.
         self.leader_uuid = None
+        # participant stammt aus LCR: Ein Server merkt sich, ob er in der
+        # aktuellen Wahl schon beteiligt war.
         self.participant = False
         self.last_heartbeat_log = 0.0
 
         self.tasks = []
+        # Verhindert, dass mehrere erkannte Ereignisse gleichzeitig mehrere
+        # Leaderwahlen im selben Prozess starten.
         self.election_lock = asyncio.Lock()
         self.discovery = BroadcastEndpoint(
             config.bind_host,
@@ -53,20 +78,33 @@ class ClusterManager:
         return self.leader_uuid == self.config.server_uuid
 
     def ring(self):
-        """Gib alle bekannten Server-UUIDs in der logischen Ringreihenfolge zurueck."""
+        """Gib alle bekannten Server-UUIDs in der logischen Ringreihenfolge zurueck.
+
+        Der Ring ist logisch, nicht physisch. Die Reihenfolge entsteht durch
+        Sortieren der UUIDs und wird fuer den LCR-Algorithmus genutzt.
+        """
         return sorted(
             [self.config.server_uuid, *self.peers],
             key=uuid_order_key,
         )
 
     def successor(self):
-        """Bestimme den naechsten Server im zyklischen, sortierten Ring."""
+        """Bestimme den naechsten Server im zyklischen, sortierten Ring.
+
+        LCR sendet Wahl- und Leadernachrichten immer an diesen Nachfolger. Beim
+        letzten Element springt der Ring wieder zum ersten.
+        """
         ring = self.ring()
         index = ring.index(self.config.server_uuid)
         return ring[(index + 1) % len(ring)]
 
     async def start(self):
-        """Starte Netzwerkdienste, entdecke Peers und beginne die erste Wahl."""
+        """Starte Netzwerkdienste, entdecke Peers und beginne die erste Wahl.
+
+        Beim Start sucht der Server vorhandene Peers per UDP und kuendigt sich
+        selbst an. Nach einer kurzen Sammelzeit wird eine LCR-Wahl gestartet,
+        damit alle bekannten Server denselben Leader bestimmen koennen.
+        """
         await self.discovery.start()
         await self.control.start()
         logging.info(
@@ -94,7 +132,12 @@ class ClusterManager:
         await self.start_election(force=True)
 
     def server_address(self):
-        """Erzeuge die im Netzwerk bekannt gegebene Beschreibung dieses Servers."""
+        """Erzeuge die im Netzwerk bekannt gegebene Beschreibung dieses Servers.
+
+        Diese Daten brauchen andere Server, um spaeter per TCP-Control mit
+        diesem Server zu sprechen. Clients nutzen aus LEADER_RESPONSE vor allem
+        host und ws_port.
+        """
         return {
             "server_uuid": self.config.server_uuid,
             "host": self.config.host,
@@ -127,11 +170,17 @@ class ClusterManager:
         return False
 
     async def handle_discovery(self, message, address):
-        """Verarbeite Clientsuche sowie Beitritt, Heartbeat und Austritt von Servern."""
+        """Verarbeite Clientsuche sowie Beitritt, Heartbeat und Austritt von Servern.
+
+        UDP-Discovery ist die offene Eingangstuer im LAN. Hier kommen sowohl
+        Client-Anfragen als auch Server-Ankuendigungen und UDP-Heartbeats an.
+        """
         message_type = message.get("type")
         if message_type == "CLIENT_DISCOVER":
             # Laut Architektur antwortet nur der aktuelle Leader. Ein Client
             # braucht keine Liste der Backups, sondern genau einen Einstiegspunkt.
+            # Wenn nach einem Failover ein anderer Server Leader ist, bekommt
+            # der Client beim naechsten Discover automatisch dessen Adresse.
             if self.is_leader:
                 logging.info(
                     "Client-Discovery von %s:%s beantwortet: Ich bin der Leader.",
@@ -152,6 +201,8 @@ class ClusterManager:
         if message_type == "SERVER_DISCOVER":
             # Die direkte Antwort geht an den zufaelligen Absenderport des neuen
             # Servers und enthaelt alle Daten fuer spaetere TCP-Verbindungen.
+            # Dadurch kann ein neuer Server andere Server finden, ohne deren IPs
+            # vorher zu kennen.
             logging.info("SERVER_DISCOVER von %s:%s empfangen.", address[0], address[1])
             await self.send_discovery(self.server_message("SERVER_JOIN"), address)
             return
@@ -184,6 +235,9 @@ class ClusterManager:
                     "PONG UDP Broadcast: HEARTBEAT von Server %s gesehen.",
                     server_uuid,
                 )
+            # Der wichtige Effekt passiert schon in register_peer(): last_seen
+            # wird aktualisiert. Dadurch weiss der Monitor, dass dieser Server
+            # noch lebt.
 
         if message_type == "SERVER_JOIN":
             logging.info("SERVER_JOIN von %s empfangen.", server_uuid)
@@ -202,7 +256,12 @@ class ClusterManager:
             await self.start_election(force=True)
 
     def register_peer(self, message, directly_seen=True):
-        """Speichere oder aktualisiere einen Server in der lokalen Ringansicht."""
+        """Speichere oder aktualisiere einen Server in der lokalen Ringansicht.
+
+        directly_seen=True bedeutet: Wir haben wirklich eine Nachricht von
+        diesem Server bekommen. indirectly/gossip bedeutet: Ein anderer Server
+        hat ihn nur gemeldet.
+        """
         server_uuid = normalize_uuid(message["server_uuid"])
         # Ein nur ueber andere Server gemeldeter Peer darf einen bereits als
         # ausgefallen erkannten Eintrag nicht versehentlich wiederbeleben.
@@ -216,9 +275,12 @@ class ClusterManager:
         if not is_new and not directly_seen:
             last_seen = self.peers[server_uuid]["last_seen"]
         self.peers[server_uuid] = {
+            # host/ws_port braucht der Leader fuer Client-Informationen und
+            # Serverbeschreibungen; control_port braucht der TCP-Control-Kanal.
             "host": message["host"],
             "ws_port": int(message["ws_port"]),
             "control_port": int(message["control_port"]),
+            # last_seen ist die Grundlage fuer Failure Detection per Timeout.
             "last_seen": last_seen,
         }
         return is_new
@@ -230,7 +292,11 @@ class ClusterManager:
         self.control.forget_peer(server_uuid)
 
     async def heartbeat_loop(self):
-        """Melde die eigene Erreichbarkeit und verteile regelmaessig die Ringansicht."""
+        """Melde die eigene Erreichbarkeit und verteile regelmaessig die Ringansicht.
+
+        Es gibt zwei Heartbeat-Arten: UDP-Broadcast fuer Sichtbarkeit im LAN und
+        TCP-Control-Heartbeat mit ACK als staerkerer Erreichbarkeitstest.
+        """
         while True:
             # UDP macht neue und bestehende Server im LAN schnell sichtbar.
             log_heartbeat = self.should_log_heartbeat()
@@ -243,7 +309,11 @@ class ClusterManager:
             await self.broadcast_announcement("HEARTBEAT")
             heartbeat = {
                 "type": "CONTROL_HEARTBEAT",
+                # Die Leader-Info hilft Peers, die gerade neu dazukommen oder
+                # kurz nicht synchron waren.
                 "leader_uuid": self.leader_uuid,
+                # Mitgliederliste als Gossip: Server koennen voneinander lernen,
+                # welche Peers im Ring existieren.
                 "members": [
                     {
                         "server_uuid": server_uuid,
@@ -285,7 +355,12 @@ class ClusterManager:
             await asyncio.sleep(HEARTBEAT_INTERVAL)
 
     async def peer_monitor_loop(self):
-        """Entferne Server ohne rechtzeitigen Heartbeat und starte falls noetig eine Wahl."""
+        """Entferne Server ohne rechtzeitigen Heartbeat und starte falls noetig eine Wahl.
+
+        Diese Schleife ist die Failure Detection. Sie kann in einem Netzwerk
+        nicht perfekt beweisen, dass ein Server tot ist, aber nach einem Timeout
+        behandelt das System ihn als ausgefallen.
+        """
         while True:
             await asyncio.sleep(HEARTBEAT_INTERVAL)
             now = time.monotonic()
@@ -303,6 +378,9 @@ class ClusterManager:
                     self.ring(),
                 )
             if expired and (leader_failed or self.leader_uuid not in self.ring()):
+                # Wenn der Leader ausgefallen ist oder die bekannte Leader-UUID
+                # nicht mehr im Ring vorkommt, braucht der Cluster einen neuen
+                # Leader.
                 await self.start_election(force=True)
 
     async def control_sender_seen(self, sender):
@@ -318,7 +396,11 @@ class ClusterManager:
         return await self.control.send(message, server_uuid, retries)
 
     async def handle_control(self, message):
-        """Verteile eingehende Kontrollnachrichten auf Wahl und Replikation."""
+        """Verteile eingehende Kontrollnachrichten auf Wahl und Replikation.
+
+        UDP wird nur zum Finden benutzt. Die wirklich wichtigen Serverbefehle
+        kommen hier ueber den bestaetigten TCP-Control-Kanal an.
+        """
         message_type = message.get("type")
         if message_type == "ELECTION":
             await self.handle_election(message)
@@ -331,8 +413,12 @@ class ClusterManager:
                 state = message["state"]
                 if state.get("version", 0) >= self.get_state().get("version", 0):
                     self.set_state(state)
+            # Die state_version im ACK zeigt dem Leader, ob genau diese Version
+            # beim Backup angekommen ist.
             return {"state_version": self.get_state().get("version", 0)}
         elif message_type == "STATE_REQUEST" and self.is_leader:
+            # Ein Backup kann nach Wahl oder Rejoin den vollstaendigen Zustand
+            # vom Leader anfordern.
             return {"state": self.get_state()}
         elif message_type == "PEER_HELLO":
             server_uuid = normalize_uuid(message["server_uuid"])
@@ -367,7 +453,11 @@ class ClusterManager:
         return None
 
     async def start_election(self, force=False):
-        """Starte eine LCR-Leaderwahl mit der eigenen Server-UUID als Kandidat."""
+        """Starte eine LCR-Leaderwahl mit der eigenen Server-UUID als Kandidat.
+
+        LCR funktioniert im Ring. Jeder Server schickt eine Kandidaten-UUID an
+        seinen Nachfolger. Am Ende gewinnt die groesste UUID.
+        """
         async with self.election_lock:
             if self.participant and not force:
                 return
@@ -423,7 +513,11 @@ class ClusterManager:
         await self.send_control(forwarded, self.successor())
 
     async def become_leader(self):
-        """Markiere diesen Server als Leader und verteile das Wahlergebnis."""
+        """Markiere diesen Server als Leader und verteile das Wahlergebnis.
+
+        Sobald die eigene UUID einmal um den Ring zurueckgekommen ist, ist klar:
+        Kein anderer bekannter Server hatte eine groessere UUID.
+        """
         self.leader_uuid = self.config.server_uuid
         logging.info("Ich bin der Leader: Server %s.", self.config.server_uuid)
         if len(self.ring()) > 1:
@@ -464,7 +558,12 @@ class ClusterManager:
                 self.set_state(response["state"])
 
     async def replicate_state(self):
-        """Sende als Leader eine Zustandskopie parallel an alle Backups."""
+        """Sende als Leader eine Zustandskopie parallel an alle Backups.
+
+        Vor wichtigen Client-Events wird der Zustand repliziert. So hat ein
+        Backup moeglichst den aktuellen Stand, falls der Leader direkt danach
+        ausfaellt.
+        """
         if not self.is_leader:
             return set()
         state = copy.deepcopy(self.get_state())

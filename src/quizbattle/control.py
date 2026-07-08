@@ -1,4 +1,10 @@
-"""Zuverlaessiger TCP-Kanal fuer Nachrichten zwischen QuizBattle-Servern."""
+"""Zuverlaessiger TCP-Kanal fuer Nachrichten zwischen QuizBattle-Servern.
+
+TCP uebertraegt Bytes innerhalb einer Verbindung zuverlaessig. Trotzdem braucht
+die Anwendung eigene ACKs: Der Sender muss wissen, ob eine Servernachricht
+wirklich verarbeitet wurde. Darum haben Control-Nachrichten message_id,
+CONTROL_ACK, Timeout, Retry und Deduplizierung.
+"""
 
 import asyncio
 import uuid
@@ -17,7 +23,12 @@ DEFERRED_MESSAGE_TYPES = {
 
 
 class ReliableControlChannel:
-    """Sende bestaetigte, deduplizierte Kontrollnachrichten mit Wiederholungen."""
+    """Sende bestaetigte, deduplizierte Kontrollnachrichten mit Wiederholungen.
+
+    Dieser Kanal wird nur zwischen Servern benutzt. Er ist die Basis fuer LCR,
+    Heartbeats, Membership und Replikation. Clients verwenden stattdessen
+    WebSockets.
+    """
 
     def __init__(
         self,
@@ -27,15 +38,28 @@ class ReliableControlChannel:
         sender_seen,
         message_handler,
     ):
-        """Verbinde den Kanal ueber Callbacks mit dem ClusterManager."""
+        """Verbinde den Kanal ueber Callbacks mit dem ClusterManager.
+
+        Die Callbacks halten diese Klasse allgemein: Der Kanal weiss, wie man
+        Nachrichten zuverlaessiger verschickt, aber der ClusterManager
+        entscheidet, was eine Nachricht fachlich bedeutet.
+        """
         self.config = config
         self.sender_address = sender_address
         self.peer_lookup = peer_lookup
         self.sender_seen = sender_seen
         self.message_handler = message_handler
+        # TCP-Listener fuer eingehende Control-Verbindungen.
         self.server = None
+        # Ein Lock pro Zielserver erhaelt die Reihenfolge ausgehender
+        # Nachrichten. So wird nicht gleichzeitig mehrfach an denselben Peer
+        # geschrieben.
         self.peer_locks = {}
+        # Ein Lock pro Absender erhaelt die Reihenfolge aufgeschobener
+        # eingehender Ringnachrichten.
         self.inbound_locks = {}
+        # Bereits beantwortete message_id -> ACK. Das ist die Deduplizierung:
+        # kommt dieselbe Nachricht erneut, wird die alte Antwort geliefert.
         self.responses = {}
 
     async def start(self):
@@ -47,7 +71,12 @@ class ReliableControlChannel:
         )
 
     async def handle_connection(self, reader, writer):
-        """Lese eine Anfrage, sende ihre Bestaetigung und schliesse die Verbindung."""
+        """Lese eine Anfrage, sende ihre Bestaetigung und schliesse die Verbindung.
+
+        Jede Control-Nachricht nutzt eine kurze TCP-Verbindung: verbinden,
+        Frame senden, ACK lesen, schließen. Das ist fuer dieses Projekt einfach
+        und gut nachvollziehbar.
+        """
         try:
             message = await asyncio.wait_for(
                 read_frame(reader), timeout=CONTROL_TIMEOUT
@@ -70,10 +99,17 @@ class ReliableControlChannel:
                 pass
 
     async def receive(self, message):
-        """Verarbeite eine Nachricht hoechstens einmal und erzeuge ein ACK."""
+        """Verarbeite eine Nachricht hoechstens einmal und erzeuge ein ACK.
+
+        Wenn der Sender kein ACK bekommen hat, sendet er dieselbe message_id
+        erneut. Diese Methode erkennt das und fuehrt die Aktion nicht doppelt
+        aus.
+        """
         message_id = message.get("message_id")
         # Wird dieselbe Nachricht wegen eines verlorenen ACK erneut gesendet,
         # liefern wir die alte Antwort, ohne die Aktion erneut auszufuehren.
+        # Beispiel: B hat REPLICATE schon verarbeitet, aber A hat das ACK nicht
+        # gesehen. A sendet erneut; B antwortet nur noch einmal.
         if message_id in self.responses:
             return self.responses[message_id]
 
@@ -86,7 +122,9 @@ class ReliableControlChannel:
 
         # Ringnachrichten muessen schnell bestaetigt werden. Ihre eigentliche
         # Bearbeitung wird danach geordnet im Hintergrund fortgesetzt, damit
-        # sich die Server im Ring nicht gegenseitig blockieren.
+        # sich die Server im Ring nicht gegenseitig blockieren. Ohne dieses
+        # schnelle ACK koennte eine LCR-Nachricht auf einen kompletten
+        # Folgeablauf warten und dadurch Timeouts ausloesen.
         deferred = message.get("type") in DEFERRED_MESSAGE_TYPES
         result = None if deferred else await self.message_handler(message)
         response = {
@@ -111,8 +149,15 @@ class ReliableControlChannel:
             await self.message_handler(message)
 
     async def send(self, message, server_uuid, retries=CONTROL_RETRIES):
-        """Sende eine Nachricht bestaetigt an einen Server und wiederhole bei Fehlern."""
+        """Sende eine Nachricht bestaetigt an einen Server und wiederhole bei Fehlern.
+
+        Kein ACK bedeutet fuer den Sender: "Ich weiss nicht, ob die Nachricht
+        verarbeitet wurde." Deshalb wird erneut gesendet. Doppelte Ausfuehrung
+        verhindert der Empfaenger ueber message_id.
+        """
         if server_uuid == self.config.server_uuid:
+            # Sonderfall fuer Ein-Server-Ring oder lokale Tests: Nachrichten an
+            # sich selbst laufen ohne echte Netzwerkverbindung durch receive().
             local = self.prepare_message(message)
             return await self.receive(local)
 
@@ -137,7 +182,12 @@ class ReliableControlChannel:
             return None
 
     def prepare_message(self, message):
-        """Ergaenze eindeutige Nachrichten-ID und eigene Absenderadresse."""
+        """Ergaenze eindeutige Nachrichten-ID und eigene Absenderadresse.
+
+        Die message_id ist die technische Identitaet genau dieser logischen
+        Nachricht. Der sender hilft dem Empfaenger, seine Peer-Liste aktuell zu
+        halten.
+        """
         return {
             **message,
             "message_id": message.get("message_id") or uuid.uuid4().hex,
@@ -145,7 +195,12 @@ class ReliableControlChannel:
         }
 
     async def send_once(self, payload, peer):
-        """Fuehre genau einen TCP-Sendeversuch mit Zeitlimit aus."""
+        """Fuehre genau einen TCP-Sendeversuch mit Zeitlimit aus.
+
+        Diese Methode macht absichtlich nur einen Versuch. Die Retry-Logik liegt
+        darueber in send(), damit klar getrennt ist: ein Versuch vs.
+        Wiederholungsstrategie.
+        """
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(peer["host"], peer["control_port"]),

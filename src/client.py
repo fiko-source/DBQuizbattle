@@ -1,4 +1,9 @@
-"""Startpunkt fuer den grafischen QuizBattle-Client."""
+"""Startpunkt fuer den grafischen QuizBattle-Client.
+
+Der Client kennt beim Start keine Server-IP. Er bekommt nur Name,
+Discovery-Port und Broadcast-Adresse. Die eigentliche Leadersuche passiert in
+client_network.py.
+"""
 
 import argparse
 import socket
@@ -11,7 +16,11 @@ from quizbattle.settings import ClientConfig, DEFAULT_DISCOVERY_PORT
 
 
 def parse_config():
-    """Lese die Kommandozeilenargumente und baue die Client-Konfiguration."""
+    """Lese die Kommandozeilenargumente und baue die Client-Konfiguration.
+
+    --broadcast ist fuer die Discovery entscheidend: dorthin sendet der Client
+    sein CLIENT_DISCOVER, damit der aktuelle Leader antworten kann.
+    """
     parser = argparse.ArgumentParser(description="QuizBattle GUI client")
     parser.add_argument("--name", default=socket.gethostname())
     parser.add_argument("--discovery-port", type=int, default=DEFAULT_DISCOVERY_PORT)

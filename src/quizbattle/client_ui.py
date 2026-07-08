@@ -1,4 +1,9 @@
-"""Grafische PyQt-Oberflaeche des QuizBattle-Clients."""
+"""Grafische PyQt-Oberflaeche des QuizBattle-Clients.
+
+Diese Datei ist nur fuer Anzeige und Benutzereingaben zuständig. Sie entscheidet
+nicht ueber Punkte, richtige Antworten oder Spielphasen; diese Entscheidungen
+kommen als Events vom Server.
+"""
 
 import time
 
@@ -17,17 +22,29 @@ from .client_network import NetworkClient
 
 
 class Signals(QObject):
-    """Transportiere Daten sicher vom Netzwerkthread in den PyQt-Hauptthread."""
+    """Transportiere Daten sicher vom Netzwerkthread in den PyQt-Hauptthread.
+
+    PyQt-Widgets duerfen nicht direkt aus dem Netzwerkthread veraendert werden.
+    Signale sorgen dafuer, dass UI-Aenderungen wieder im GUI-Thread passieren.
+    """
 
     message = pyqtSignal(dict)
     status = pyqtSignal(str)
 
 
 class QuizWindow(QWidget):
-    """Zeige Fragen, Eingaben, Teamchat, Ergebnisse und Verbindungsstatus."""
+    """Zeige Fragen, Eingaben, Teamchat, Ergebnisse und Verbindungsstatus.
+
+    QuizWindow sammelt alle sichtbaren Elemente und reagiert auf Serverevents,
+    die NetworkClient ueber Signals weitergibt.
+    """
 
     def __init__(self, config):
-        """Erzeuge Fensterzustand, Signale und den Netzwerkclient."""
+        """Erzeuge Fensterzustand, Signale und den Netzwerkclient.
+
+        Die wichtigsten lokalen Variablen sind nur Anzeigezustand: player_id,
+        team_round, team_name und deadline stammen letztlich vom Server.
+        """
         super().__init__()
         self.player_id = None
         self.team_round = False
@@ -50,7 +67,12 @@ class QuizWindow(QWidget):
         self.network.start()
 
     def build_ui(self, name):
-        """Erzeuge und verbinde alle sichtbaren Bedienelemente."""
+        """Erzeuge und verbinde alle sichtbaren Bedienelemente.
+
+        Die Buttons rufen nur send_* Methoden auf. Diese schicken Nachrichten an
+        den Netzwerkclient; die eigentliche Bewertung erfolgt spaeter auf dem
+        Server.
+        """
         self.setWindowTitle(f"QuizBattle - {name}")
         self.resize(700, 520)
         self.score_label = QLabel("Punkte: 0")
@@ -107,7 +129,11 @@ class QuizWindow(QWidget):
         self.status_label.setText(text)
 
     def set_inputs(self, enabled):
-        """Aktiviere Eingaben nur waehrend der erlaubten Antwortphase."""
+        """Aktiviere Eingaben nur waehrend der erlaubten Antwortphase.
+
+        Das ist nur eine Benutzerfuehrung. Sicherheit entsteht trotzdem auf dem
+        Server, weil game.py jede Aktion nochmal gegen die aktuelle Phase prueft.
+        """
         self.answer_input.setEnabled(enabled)
         self.answer_button.setEnabled(enabled)
         self.chat_input.setEnabled(enabled and self.team_round)
@@ -148,7 +174,11 @@ class QuizWindow(QWidget):
         self.set_status(f"Kategorie gewählt: {category}")
 
     def handle_message(self, message):
-        """Ordne jede empfangene Nachrichtenart der passenden Anzeigeaktion zu."""
+        """Ordne jede empfangene Nachrichtenart der passenden Anzeigeaktion zu.
+
+        Diese Methode ist der zentrale Verteiler fuer Serverevents in der GUI.
+        Neue Eventtypen muessen hier einer Anzeigeaktion zugeordnet werden.
+        """
         message_type = message.get("type")
         if message_type == "WELCOME":
             self.player_id = message["player_id"]
@@ -218,7 +248,12 @@ class QuizWindow(QWidget):
         self.set_inputs(False)
 
     def show_category_selection(self, message):
-        """Zeige Kategorieauswahl und aktiviere sie nur fuer den gewaehlten Spieler."""
+        """Zeige Kategorieauswahl und aktiviere sie nur fuer den gewaehlten Spieler.
+
+        Die UI deaktiviert Buttons fuer nicht berechtigte Spieler. Der Server
+        prueft die Berechtigung trotzdem nochmal, falls ein Client manipuliert
+        oder verspätet sendet.
+        """
         self.deadline = 0
         self.set_inputs(False)
         self.answer_input.clear()

@@ -1,4 +1,9 @@
-"""Gemeinsame Kodierung fuer UDP-Datagramme und gerahmte TCP-Nachrichten."""
+"""Gemeinsame Kodierung fuer UDP-Datagramme und gerahmte TCP-Nachrichten.
+
+In diesem Projekt werden alle Netzwerkdaten als JSON verschickt. UDP liefert
+einzelne Datagramme, TCP dagegen nur einen Byte-Strom. Deshalb kapselt dieses
+Modul die Unterschiede: JSON-Kodierung, TCP-Laengenheader und UDP-Callback.
+"""
 
 import asyncio
 import json
@@ -6,11 +11,19 @@ import socket
 import struct
 
 
+# Schutzgrenze fuer eingehende TCP-Control-Nachrichten. Ein kaputtes oder
+# falsches Paket soll nicht dazu fuehren, dass der Server beliebig viel Speicher
+# fuer eine angebliche Nachricht reserviert.
 MAX_FRAME_SIZE = 10 * 1024 * 1024
 
 
 def local_ip():
-    """Bestimme die vom Betriebssystem verwendete lokale IPv4-Adresse."""
+    """Bestimme die vom Betriebssystem verwendete lokale IPv4-Adresse.
+
+    Diese Funktion ist ein Komfort-Fallback. Fuer echte Demos ist es oft besser,
+    die LAN-IP explizit beim Start anzugeben, weil Rechner mehrere Interfaces
+    haben koennen, zum Beispiel WLAN, VPN oder Parallels.
+    """
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         # Es werden keine Daten gesendet. connect laesst das Betriebssystem nur
@@ -25,7 +38,11 @@ def local_ip():
 
 
 def json_bytes(message):
-    """Kodiere ein Dictionary platzsparend als UTF-8-JSON."""
+    """Kodiere ein Dictionary platzsparend als UTF-8-JSON.
+
+    ensure_ascii=False ist wichtig, damit deutsche Texte wie Kategorien oder
+    Fragen lesbar und korrekt als UTF-8 verschickt werden.
+    """
     return json.dumps(
         message, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")
@@ -40,7 +57,12 @@ def frame_message(message):
 
 
 async def read_frame(reader):
-    """Lese genau eine laengengerahmte JSON-Nachricht aus einem TCP-Stream."""
+    """Lese genau eine laengengerahmte JSON-Nachricht aus einem TCP-Stream.
+
+    Erst werden vier Bytes Laenge gelesen, danach exakt so viele Nutzdaten. So
+    kann eine einzelne JSON-Nachricht aus dem TCP-Byte-Strom rekonstruiert
+    werden.
+    """
     header = await reader.readexactly(4)
     length = struct.unpack("!I", header)[0]
     if length > MAX_FRAME_SIZE:
@@ -56,7 +78,11 @@ async def send_frame(writer, message):
 
 
 class DatagramProtocol(asyncio.DatagramProtocol):
-    """Uebersetze eingehende UDP-Daten in asynchrone Callback-Aufrufe."""
+    """Uebersetze eingehende UDP-Daten in asynchrone Callback-Aufrufe.
+
+    asyncio ruft datagram_received synchron auf. Die eigentliche Verarbeitung
+    darf aber async sein, deshalb wird unten ein Task im Event-Loop erstellt.
+    """
 
     def __init__(self, callback):
         """Speichere die Funktion, die gueltige Datagramme verarbeitet."""

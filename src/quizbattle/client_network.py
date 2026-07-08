@@ -1,4 +1,9 @@
-"""Netzwerkseite des Clients: Discovery, WebSocket und Nachrichtenordnung."""
+"""Netzwerkseite des Clients: Discovery, WebSocket und Nachrichtenordnung.
+
+Diese Datei sorgt dafuer, dass der Client den aktuellen Leader findet, sich per
+WebSocket verbindet und nach einem Leaderausfall automatisch neu sucht. Die GUI
+bleibt davon getrennt und bekommt nur Signale.
+"""
 
 import asyncio
 import json
@@ -12,21 +17,34 @@ from .client_ordering import OrderedEventBuffer
 
 
 class NetworkClient:
-    """Verbinde die PyQt-Oberflaeche mit dem jeweils aktiven Quiz-Leader."""
+    """Verbinde die PyQt-Oberflaeche mit dem jeweils aktiven Quiz-Leader.
+
+    Der Client ist kein Teil des Serverrings. Er macht keine Leaderwahl, sondern
+    fragt per UDP-Broadcast: "Wer ist Leader?" und verbindet sich dann mit der
+    Antwort.
+    """
 
     def __init__(self, name, discovery_port, broadcast_ip, signals):
-        """Speichere Einstellungen und bereite den Verbindungszustand vor."""
+        """Speichere Einstellungen und bereite den Verbindungszustand vor.
+
+        token und ordering bleiben ueber Reconnects erhalten. Dadurch kann der
+        Client nach einem Leaderwechsel dieselbe Spielersitzung fortsetzen und
+        fehlende Events nachfordern.
+        """
         self.name = name
         self.discovery_port = discovery_port
         self.broadcast_ip = broadcast_ip
         self.signals = signals
+        # Wird vom Server vergeben und beim naechsten JOIN wieder mitgeschickt.
         self.token = None
         self.player_id = None
         self.websocket = None
         self.loop = None
         self.outbox = None
         self.stopped = False
+        # Sortiert sequenzierte Serverevents und erkennt Luecken.
         self.ordering = OrderedEventBuffer()
+        # Aktionen mit request_id, fuer die noch kein ACTION_STATUS kam.
         self.pending_actions = {}
 
     @property
@@ -64,7 +82,12 @@ class NetworkClient:
             asyncio.run_coroutine_threadsafe(self.outbox.put(message), self.loop)
 
     async def discover_leader(self):
-        """Suche den aktuellen Leader per UDP-Broadcast im lokalen Netzwerk."""
+        """Suche den aktuellen Leader per UDP-Broadcast im lokalen Netzwerk.
+
+        TCP/WebSocket braucht eine konkrete Zieladresse. Die kennen wir am
+        Anfang nicht, deshalb fragt der Client per UDP-Broadcast alle Server im
+        Subnetz. Nur der Leader antwortet mit Host und WebSocket-Port.
+        """
         loop = asyncio.get_running_loop()
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -94,7 +117,11 @@ class NetworkClient:
         return None
 
     async def connection_loop(self):
-        """Suche dauerhaft einen Leader und stelle verlorene Verbindungen wieder her."""
+        """Suche dauerhaft einen Leader und stelle verlorene Verbindungen wieder her.
+
+        Dieser Loop laeuft so lange, bis der Client beendet wird. Geht die
+        WebSocket-Verbindung verloren, beginnt die Leadersuche erneut.
+        """
         while not self.stopped:
             self.signals.status.emit("Suche Leader im Netzwerk...")
             leader = await self.discover_leader()
@@ -146,18 +173,26 @@ class NetworkClient:
                 self.websocket = None
 
     async def receive_loop(self, websocket):
-        """Empfange Servernachrichten und liefere sie geordnet an die GUI."""
+        """Empfange Servernachrichten und liefere sie geordnet an die GUI.
+
+        Sequenzierte Events gehen zuerst durch OrderedEventBuffer. Nur
+        lueckenlose Events werden an die GUI weitergegeben.
+        """
         async for raw in websocket:
             message = json.loads(raw)
             message_type = message.get("type")
             if message_type == "NOT_LEADER":
                 return
             if message_type == "WELCOME":
+                # WELCOME liefert die dauerhafte Spielersitzung fuer spaetere
+                # Reconnects.
                 self.token = message["token"]
                 self.player_id = message["player_id"]
                 self.signals.message.emit(message)
                 continue
             if message_type == "ACTION_STATUS":
+                # Der Server hat eine Aktion mit request_id verarbeitet. Sie
+                # muss deshalb nicht mehr wiederholt werden.
                 self.pending_actions.pop(message.get("request_id"), None)
                 self.signals.message.emit(message)
                 continue
@@ -189,7 +224,11 @@ class NetworkClient:
             )
 
     async def send_loop(self, websocket):
-        """Sende neue und noch nicht bestaetigte Clientaktionen an den Leader."""
+        """Sende neue und noch nicht bestaetigte Clientaktionen an den Leader.
+
+        Spieleraktionen werden wiederholt, bis der Server sie mit ACTION_STATUS
+        bestaetigt. Durch request_id kann der Server Wiederholungen erkennen.
+        """
         # Nach einem Reconnect werden unbestaetigte Aktionen zuerst wiederholt.
         for message in list(self.pending_actions.values()):
             await websocket.send(json.dumps(message, ensure_ascii=False))

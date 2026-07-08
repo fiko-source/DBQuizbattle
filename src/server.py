@@ -1,4 +1,9 @@
-"""Startpunkt eines QuizBattle-Servers."""
+"""Startpunkt eines QuizBattle-Servers.
+
+Diese Datei ist absichtlich klein: Sie liest nur Startparameter, erzeugt die
+ServerConfig und uebergibt danach an QuizServer. Die verteilte Logik liegt in
+den Modulen unter quizbattle/.
+"""
 
 import argparse
 import asyncio
@@ -11,7 +16,12 @@ from quizbattle.settings import DEFAULT_DISCOVERY_PORT, PROJECT_DIR, ServerConfi
 
 
 def parse_config():
-    """Lese Serveridentitaet, LAN-Adresse und Ports aus der Kommandozeile."""
+    """Lese Serveridentitaet, LAN-Adresse und Ports aus der Kommandozeile.
+
+    Der Server braucht beim Start zwei Portarten: WebSocket fuer Clients und
+    Control-TCP fuer andere Server. Die UUID kommt entweder explizit oder aus
+    einer persistenten Identity-Datei.
+    """
     parser = argparse.ArgumentParser(description="Distributed QuizBattle server")
     identity = parser.add_mutually_exclusive_group()
     identity.add_argument("--uuid", help="Explicit server UUID")
@@ -25,8 +35,12 @@ def parse_config():
     args = parser.parse_args()
 
     if args.uuid:
+        # Explizite UUID ist praktisch fuer reproduzierbare Tests. Im normalen
+        # Betrieb wird eher die Identity-Datei verwendet.
         server_uuid = normalize_uuid(args.uuid)
     else:
+        # Standard: pro Control-Port eine eigene Identity-Datei. Dadurch koennen
+        # mehrere Server auf demselben Testgeraet unterschiedliche UUIDs haben.
         identity_file = args.identity_file or (
             PROJECT_DIR / f".server_uuid_{args.control_port}"
         )
@@ -44,7 +58,11 @@ def parse_config():
 
 
 async def main():
-    """Konfiguriere Logging und betreibe den Server bis zum Programmende."""
+    """Konfiguriere Logging und betreibe den Server bis zum Programmende.
+
+    server.start() laeuft dauerhaft. Bei Ctrl+C wird im finally-Block sauber
+    gestoppt, damit SERVER_LEAVE gesendet und Listener geschlossen werden.
+    """
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",

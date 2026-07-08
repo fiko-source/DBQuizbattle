@@ -1,4 +1,9 @@
-"""Zentrale, replizierbare Spiellogik des QuizBattle-Servers."""
+"""Zentrale, replizierbare Spiellogik des QuizBattle-Servers.
+
+Dieses Modul enthaelt die fachlichen Spielregeln. Der Client zeigt nur an und
+sendet Eingaben; ob eine Antwort zaehlt, welche Kategorie aktiv ist und wie der
+Punktestand aussieht, entscheidet der Server hier.
+"""
 
 import asyncio
 import random
@@ -10,7 +15,10 @@ from tinydb import TinyDB
 from .settings import MIN_PLAYERS, PROJECT_DIR, RESULT_TIME, ROUND_TIME
 
 
+# Nach dieser Anzahl Fragen wird wieder eine Kategorieauswahl gestartet.
 CATEGORY_BLOCK_SIZE = 5
+# Bevorzugte Reihenfolge der Kategorien. Weitere Kategorien aus tinydb.json
+# wuerden danach alphabetisch angehaengt.
 DEFAULT_CATEGORIES = [
     "Fußball",
     "Politik",
@@ -21,7 +29,11 @@ DEFAULT_CATEGORIES = [
 
 
 def load_questions():
-    """Lade alle Quizfragen aus der projektlokalen TinyDB-Datenbank."""
+    """Lade alle Quizfragen aus der projektlokalen TinyDB-Datenbank.
+
+    Die Fragen werden lokal gelesen. Die Datenbank selbst wird nicht verteilt;
+    verteilt wird spaeter der daraus entstandene Spielzustand.
+    """
     database = TinyDB(PROJECT_DIR / "tinydb.json")
     try:
         return database.all()
@@ -30,7 +42,11 @@ def load_questions():
 
 
 def initial_state():
-    """Erzeuge einen frischen Spielzustand mit allen replizierten Feldern."""
+    """Erzeuge einen frischen Spielzustand mit allen replizierten Feldern.
+
+    Alles, was ein Backup fuer die Uebernahme braucht, liegt in diesem
+    Dictionary: Spieler, Punkte, Phase, Fragen, Events und Sequenznummer.
+    """
     # Der Zustand besteht nur aus JSON-kompatiblen Werten. Dadurch kann er
     # einfach kopiert, ueber TCP versendet und von einem Backup uebernommen werden.
     return {
@@ -58,10 +74,20 @@ def initial_state():
 
 
 class QuizGame:
-    """Verwalte Spieler, Runden, Antworten, Teams und Punktestaende."""
+    """Verwalte Spieler, Runden, Antworten, Teams und Punktestaende.
+
+    Die Klasse ist absichtlich nicht direkt an WebSockets oder TCP gekoppelt.
+    Sie bekommt Callbacks, um Events zu senden und Zustand zu replizieren.
+    Dadurch bleibt die Spiellogik von der Netzwerktechnik getrennt.
+    """
 
     def __init__(self, connected_tokens, emit_event, replicate_state):
-        """Verbinde die Spiellogik ueber Callbacks mit Server und Cluster."""
+        """Verbinde die Spiellogik ueber Callbacks mit Server und Cluster.
+
+        connected_tokens sagt, welche Spieler gerade verbunden sind. emit_event
+        erzeugt sequenzierte Clientevents. replicate_state sorgt dafuer, dass
+        Backups nach Aenderungen den aktuellen Zustand bekommen.
+        """
         self.connected_tokens = connected_tokens
         self.emit_event = emit_event
         self.replicate_state = replicate_state
@@ -73,7 +99,11 @@ class QuizGame:
         self.state = state
 
     def mark_changed(self):
-        """Erhoehe die Version nach jeder inhaltlichen Zustandsaenderung."""
+        """Erhoehe die Version nach jeder inhaltlichen Zustandsaenderung.
+
+        Die Version hilft dem Leader zu pruefen, ob ein Backup genau den
+        aktuellen Zustand bestaetigt hat.
+        """
         self.state["version"] = self.state.get("version", 0) + 1
 
     def categories(self):
@@ -84,7 +114,12 @@ class QuizGame:
         return preferred + extras
 
     def ensure_category_questions(self):
-        """Erzeuge gemischte Frage-Pools pro Kategorie, falls sie fehlen."""
+        """Erzeuge gemischte Frage-Pools pro Kategorie, falls sie fehlen.
+
+        Die gemischten Pools werden im Zustand gespeichert und damit repliziert.
+        Nach einem Failover spielt der neue Leader also mit derselben
+        verbleibenden Fragenreihenfolge weiter.
+        """
         pools = self.state.get("category_questions") or {}
         if pools:
             return
@@ -119,7 +154,11 @@ class QuizGame:
         )
 
     def category_chooser(self):
-        """Bestimme den Spieler, der die naechste Kategorie auswaehlen darf."""
+        """Bestimme den Spieler, der die naechste Kategorie auswaehlen darf.
+
+        Die Wahl wechselt nach Spielerreihenfolge. Wenn jemand getrennt ist,
+        werden bevorzugt verbundene Spieler beruecksichtigt.
+        """
         tokens = self.ordered_player_tokens(connected_only=True)
         if not tokens:
             tokens = self.ordered_player_tokens()
@@ -130,7 +169,11 @@ class QuizGame:
         return tokens[chooser_index]
 
     async def add_or_resume_player(self, requested_token, name):
-        """Setze eine bekannte Sitzung fort oder registriere einen neuen Spieler."""
+        """Setze eine bekannte Sitzung fort oder registriere einen neuen Spieler.
+
+        requested_token kommt vom Client beim Reconnect. Ist der Token bekannt,
+        bekommt der Spieler keinen neuen Punktestand und keine neue Spieler-ID.
+        """
         # Ein Token bleibt beim Client ueber Reconnects erhalten. Dadurch bekommt
         # derselbe Spieler nach einem Leaderwechsel keinen zweiten Eintrag.
         if requested_token in self.state["players"]:
@@ -148,7 +191,12 @@ class QuizGame:
         return token
 
     async def handle_action(self, token, message):
-        """Pruefe und verarbeite Antwort-, Teamantwort- oder Chataktionen."""
+        """Pruefe und verarbeite Antwort-, Teamantwort- oder Chataktionen.
+
+        Alle Clientaktionen landen zuerst hier. Der Server prueft die aktuelle
+        Phase und entscheidet, ob die Aktion erlaubt ist. Dadurch kann ein
+        Client nicht lokal Punkte oder Phasen manipulieren.
+        """
         request_id = message.get("request_id")
         processed = self.state["processed_requests"]
         # Eine erneut gesendete Aktion liefert nur ihr altes Ergebnis. Das macht
@@ -225,7 +273,12 @@ class QuizGame:
         return None
 
     async def handle_category_choice(self, token, message):
-        """Pruefe die Kategorieauswahl und starte den naechsten Fragenblock."""
+        """Pruefe die Kategorieauswahl und starte den naechsten Fragenblock.
+
+        Auch wenn die GUI Buttons deaktiviert, vertraut der Server dem Client
+        nicht blind: Nur der aktuell berechtigte Spieler darf eine gueltige
+        Kategorie waehlen.
+        """
         request_id = message.get("request_id")
         if self.state["phase"] != "category_select":
             status = "Aktuell steht keine Kategorieauswahl an."
@@ -263,7 +316,12 @@ class QuizGame:
         return status
 
     async def remember_request(self, request_id, status, replicate=True):
-        """Merke das Ergebnis einer Aktion fuer deduplizierte Wiederholungen."""
+        """Merke das Ergebnis einer Aktion fuer deduplizierte Wiederholungen.
+
+        Wenn ein Client nach Reconnect dieselbe Aktion erneut sendet, liefert
+        der Server denselben Status zurueck, statt die Aktion doppelt
+        anzuwenden.
+        """
         if not request_id:
             return
         self.state["processed_requests"][request_id] = status
@@ -282,7 +340,12 @@ class QuizGame:
         return None
 
     async def run(self, is_leader):
-        """Fuehre als Leader den Zustandsautomaten des Spiels dauerhaft aus."""
+        """Fuehre als Leader den Zustandsautomaten des Spiels dauerhaft aus.
+
+        Nur der Leader darf diesen Loop aktiv ausfuehren. Backups halten nur den
+        replizierten Zustand. Nach einem Leaderwechsel startet der neue Leader
+        diesen Zustandsautomaten weiter.
+        """
         while is_leader():
             phase = self.state["phase"]
             if phase == "waiting":
@@ -345,7 +408,11 @@ class QuizGame:
         )
 
     async def start_category_selection(self):
-        """Fordere den naechsten Spieler zur Kategorieauswahl auf."""
+        """Fordere den naechsten Spieler zur Kategorieauswahl auf.
+
+        Dieses Event ist selbst Teil der geordneten Ereignishistorie. Alle
+        Clients sehen dadurch dieselbe Kategorieauswahl in derselben Reihenfolge.
+        """
         categories = self.available_categories()
         if not categories:
             self.state["phase"] = "game_over"
@@ -393,7 +460,12 @@ class QuizGame:
         return pool.pop(0)
 
     async def start_next_round(self):
-        """Beende gegebenenfalls das Spiel oder veroeffentliche die naechste Frage."""
+        """Beende gegebenenfalls das Spiel oder veroeffentliche die naechste Frage.
+
+        Eine Runde besteht aus mehreren klar getrennten Events. Das macht die
+        Clientanzeige einfacher und sorgt dafuer, dass ACK/Resend einzelne
+        Phasen sauber nachliefern kann.
+        """
         if (
             not self.state.get("current_category")
             or self.state.get("category_round_count", 0) >= CATEGORY_BLOCK_SIZE
@@ -478,7 +550,11 @@ class QuizGame:
         }
 
     async def evaluate_round(self):
-        """Vergleiche Antworten, vergebe Punkte und veroeffentliche das Ergebnis."""
+        """Vergleiche Antworten, vergebe Punkte und veroeffentliche das Ergebnis.
+
+        Die Auswertung passiert zentral auf dem Server. Clients bekommen nur das
+        Ergebnis und duerfen den Punktestand nicht selbst berechnen.
+        """
         correct = self.state["question"]["antwort"].strip().casefold()
         results = {}
 

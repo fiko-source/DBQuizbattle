@@ -1,4 +1,9 @@
-"""Wiederverwendbarer UDP-Endpunkt fuer Discovery und Heartbeats."""
+"""Wiederverwendbarer UDP-Endpunkt fuer Discovery und Heartbeats.
+
+UDP wird hier bewusst nur fuer "Wer ist im lokalen Netz?" verwendet. Kritische
+Spiel- und Serverkoordination laeuft spaeter ueber WebSocket oder den
+zuverlaessigen TCP-Control-Kanal.
+"""
 
 import asyncio
 import socket
@@ -7,7 +12,12 @@ from .protocol import DatagramProtocol, json_bytes
 
 
 class BroadcastEndpoint:
-    """Sende Broadcasts und leite empfangene JSON-Nachrichten weiter."""
+    """Sende Broadcasts und leite empfangene JSON-Nachrichten weiter.
+
+    Die Klasse ist absichtlich generisch: Sie weiss nicht, ob eine Nachricht ein
+    CLIENT_DISCOVER, SERVER_JOIN oder HEARTBEAT ist. Sie transportiert nur UDP
+    und uebergibt die Bedeutung an den Callback.
+    """
 
     def __init__(self, bind_host, port, broadcast_ip, callback):
         """Speichere Bind-Adresse, Ziel-Broadcast und Empfangsfunktion."""
@@ -18,7 +28,11 @@ class BroadcastEndpoint:
         self.transport = None
 
     async def start(self):
-        """Oeffne den gemeinsam genutzten UDP-Discovery-Port."""
+        """Oeffne den gemeinsam genutzten UDP-Discovery-Port.
+
+        Mehrere Serverprozesse koennen beim Testen auf demselben Rechner laufen.
+        Darum wird versucht, den Discovery-Port mehrfach nutzbar zu machen.
+        """
         loop = asyncio.get_running_loop()
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -36,7 +50,11 @@ class BroadcastEndpoint:
         )
 
     def send(self, message, target=None):
-        """Sende an ein konkretes Ziel oder standardmaessig als Broadcast."""
+        """Sende an ein konkretes Ziel oder standardmaessig als Broadcast.
+
+        Ohne target geht die Nachricht an die Broadcast-Adresse. Mit target wird
+        direkt an den Absender geantwortet, zum Beispiel bei LEADER_RESPONSE.
+        """
         if not self.transport:
             return
         destination = target or (self.broadcast_ip, self.port)

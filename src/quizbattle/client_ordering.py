@@ -1,11 +1,24 @@
-"""Sortierung von Serverereignissen anhand fortlaufender Sequenznummern."""
+"""Sortierung von Serverereignissen anhand fortlaufender Sequenznummern.
+
+Der Leader nummeriert Spielereignisse fortlaufend. Diese Datei stellt sicher,
+dass die GUI sie auch wirklich in dieser Reihenfolge sieht, selbst wenn durch
+Reconnect oder erneutes Senden etwas doppelt oder zu frueh ankommt.
+"""
 
 
 class OrderedEventBuffer:
-    """Halte zu frueh eingetroffene Ereignisse bis zu ihrer Reihenfolge zurueck."""
+    """Halte zu frueh eingetroffene Ereignisse bis zu ihrer Reihenfolge zurueck.
+
+    Dieses Prinzip nennt man Hold-back-Queue: Ein Event wartet, bis alle
+    vorherigen Sequenznummern verarbeitet wurden.
+    """
 
     def __init__(self, last_sequence=0):
-        """Initialisiere den Puffer nach der zuletzt verarbeiteten Sequenznummer."""
+        """Initialisiere den Puffer nach der zuletzt verarbeiteten Sequenznummer.
+
+        Nach einem Reconnect startet der Client nicht bei 0, sondern bei der
+        letzten bekannten Sequenz weiter.
+        """
         self.last_sequence = last_sequence
         self.holdback = {}
 
